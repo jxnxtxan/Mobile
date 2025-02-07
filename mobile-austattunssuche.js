@@ -373,6 +373,7 @@
         overlay.style.left = '0';
         overlay.style.width = '100%';
         overlay.style.height = '100%';
+        overlay.style.zIndex = '2147483647'; 
         overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
         overlay.style.zIndex = '999999';
         overlay.style.opacity = '0';
@@ -385,6 +386,7 @@
         popup.style.top = '50%';
         popup.style.left = '50%';
         popup.style.transform = 'translate(-50%, -50%)';
+        popup.style.zIndex = '2147483647';
         popup.style.width = '80%';
         popup.style.maxWidth = '900px';
         popup.style.maxHeight = '80%';
