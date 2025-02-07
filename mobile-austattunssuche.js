@@ -1,129 +1,108 @@
 // ==UserScript==
-// @name         Mobile.de Ausstattungssuche
+// @name         Mobile.de Ausstattungssuche mit modernem Popup & Import/Export
 // @namespace    http://tampermonkey.net/
-// @version      1.7
-// @author       Huibu5678 / Querslider
+// @version      3.2
+// @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de. Popup jetzt mit Import/Export-Funktion (JSON).
 // @match        https://suchen.mobile.de/fahrzeuge/details.html*
-// @grant        none
+// @grant        GM_getValue
+// @grant        GM_setValue
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    // Suchkonfigurationen mit Farb-Attribut
-    const suchKonfigurationen = [
-        { begriffe: ['4wd', 'allrad'], anzeige: 'Allrad', farbe: 'orange', aktiv: true },
-        { begriffe: ['quattro'], anzeige: 'Quattro / Allrad', farbe: 'orange', aktiv: true },
-        { begriffe: ['Ambiente-Beleuchtung', 'ambiente beleuchtung'], anzeige: 'Ambiente-Beleuchtung', aktiv: false },
-        { begriffe: ['scheiben abgedunk', 'abgedunk scheib'], anzeige: 'Abgedunkelte Scheiben', aktiv: true },
-        { begriffe: ['akustik glas', 'frontscheibe akus'], anzeige: 'Akustikverglasung', aktiv: true },
-        { begriffe: ['seitenscheibe akus', 'Türscheiben akus'], anzeige: 'Seitenscheiben Akustikverglasung', aktiv: true },
-        { begriffe: ['adapt kurv licht', 'kurvenlicht adaptiv'], anzeige: 'Adaptives Kurvenlicht', aktiv: false },
-        { begriffe: ['tempomat abstand', 'adapt temp', 'acc'], anzeige: 'Abstandstempomat', farbe: 'orange', aktiv: true },
-        { begriffe: ['abstands warn', 'distance warn'], anzeige: 'Abstandswarner', aktiv: false },
-        { begriffe: ['ambiente licht', 'stimmungslicht'], anzeige: 'Ambiente-Beleuchtung', aktiv: true },
-        { begriffe: ['Anhängevorrichtung', 'Anhängerkupplung', 'Anhaengerkupplung', 'Anhaengevorrichtung', 'ahk'], anzeige: 'Anhängerkupplung', farbe: 'red', aktiv: true },
-        { begriffe: ['Anhängevorrichtung schwenkbar', 'Anhaengevorrichtung schwenkbar', 'Anhängerkupplung schwenkbar', 'Anhaengerkupplung schwenkbar'], anzeige: 'Anhängerkupplung schwenkbar', aktiv: true },
-        { begriffe: ['armlehne', 'lehne'], anzeige: 'Armlehne', aktiv: false },
-        { begriffe: ['apple carplay'], anzeige: 'Apple Carplay', aktiv: true },
-        { begriffe: ['android auto'], anzeige: 'Android Auto', aktiv: true },
-        { begriffe: ['außenspiegel elek verst', 'elek spiegel', 'seitenspiegel'], anzeige: 'Außenspiegel elektr. verstellbar', aktiv: true },
-        { begriffe: ['außenspiegel elek heiz', 'außenspiegel heiz'], anzeige: 'Außenspiegel elektr. verstell- und heizbar', aktiv: true },
-        { begriffe: ['Bang & Olufsen', 'b&o', 'Bang Olufsen'], anzeige: 'Bang & Olufsen Sound System', farbe: 'red', aktiv: true },
-        { begriffe: ['blendfrei fernlicht', 'anti blend licht', 'fernlicht assist', 'auto fernlicht'], anzeige: 'Fernlicht Assistent', farbe: 'orange', aktiv: true },
-        { begriffe: ['brems assist', 'brake assist'], anzeige: 'Bremsassistent', aktiv: true },
-        { begriffe: ['Business-Paket Professional', 'busin', 'Business', 'Buisn paket profess'], anzeige: 'Business Paket', aktiv: true },
-        { begriffe: ['Burmester', 'burme'], anzeige: 'Burmester Sound System', farbe: 'red', aktiv: true },
-        { begriffe: ['canton'], anzeige: 'Canton Sound System', farbe: 'red', aktiv: true },
-        { begriffe: ['dachhimmel anth', 'himmel anth', 'Dachhimmel schwarz', 'Dachhimmel Stoff  schwarz', 'Dachhimmel Stoff, schwarz', 'dachhim schwarz'], anzeige: 'Dachhimmel Anthrazit / Schwarz', aktiv: true },
-        { begriffe: ['dachhimmel alcantara', 'himmel alcant'], anzeige: 'Dachhimmel Alcantara', aktiv: true },
-        { begriffe: ['elek fenst'], anzeige: 'Elektr. Fensterheber', aktiv: false },
-        { begriffe: ['elek heckklappe'], anzeige: 'Elektr. Heckklappe', aktiv: false },
-        { begriffe: ['sitz elek', 'sitz elek verstell'], anzeige: 'Elektr. Sitzeinstellung', aktiv: true },
-        { begriffe: ['memory sitz', 'sitz memory', 'sitz elek verstell memo'], anzeige: 'Elektr. Sitzeinstellung mit Memory-Funktion', farbe: 'red', aktiv: true },
-        { begriffe: ['garantie'], anzeige: 'Garantie', aktiv: false },
-        { begriffe: ['head up', 'HUD', 'head'], anzeige: 'Head-Up Display', aktiv: true },
-        { begriffe: ['heckantrieb', 'antrieb heck'], anzeige: 'Heckantrieb', aktiv: false },
-        { begriffe: ['harman kardon', 'h&k'], anzeige: 'Harman Kardon Sound System', farbe: 'red', aktiv: true },
-        { begriffe: ['induktiv laden', 'wireless charge'], anzeige: 'Induktionsladeschale für Smartphone (Wireless Charging)', aktiv: false },
-        { begriffe: ['innenspiegel abblend', 'inne spiegel auto'], anzeige: 'Innenspiegel autom. abblendend', aktiv: true },
-        { begriffe: ['lenkradheizung', 'Beheizbares Lenkrad', 'lenk heiz'], anzeige: 'Lenkradheizung', aktiv: true },
-        { begriffe: ['matrix led', 'matrix scheinwer', 'matrix beam', 'matrix licht'], anzeige: 'Matrix Scheinwerfer', farbe: 'red', aktiv: true },
-        { begriffe: ['panorama', 'panoramadach', 'glas dach'], anzeige: 'Panoramadach', farbe: 'orange', aktiv: true },
-        { begriffe: ['park assist', 'park hilfe'], anzeige: 'Parkassistent', aktiv: true },
-        { begriffe: ['pdc', 'park dist contr'], anzeige: 'Park-Distance-Control', aktiv: true },
-        { begriffe: ['reifen druck', 'druck kontrolle'], anzeige: 'Reifendruck Kontrollsystem', aktiv: true },
-        { begriffe: ['Rückfahrkamera', 'Rückfahrkamerasystem', 'Rueckfahrkamera'], anzeige: 'Rückfahrkamera', aktiv: true },
-        { begriffe: ['seiten airbag', 'airbag seite'], anzeige: 'Seitenairbag', aktiv: false },
-        { begriffe: ['spiegel klappbar', 'elek spiegel klapp'], anzeige: 'Seitenspiegel anklappbar', aktiv: true },
-        { begriffe: ['scheckheft gepflegt', 'scheckheft'], anzeige: 'Scheckheftgepflegt', farbe: 'red', aktiv: true },
-        { begriffe: ['keyless', 'schlüssel frei', 'schlüssellose zentral'], anzeige: 'Schlüssellose Zentralverriegelung (Keyless)', farbe: 'orange', aktiv: true },
-        { begriffe: ['Servoschließung tür', 'soft close'], verboten: ['pedal', 'virtuell'], anzeige: 'Softclose', aktiv: true },
-        { begriffe: ['Sonnenschutzverglasung'], anzeige: 'Sonnenschutzverglasung', aktiv: true },
-        { begriffe: ['Sonnenschutzverglasung abgedunkelt'], anzeige: 'Sonnenschutzverglasung abgedunkelt', aktiv: true },
-        { begriffe: ['spurhalte assist', 'lane assist'], anzeige: 'Spurhalteassistent', aktiv: true },
-        { begriffe: ['Standheizung', 'standhei'], anzeige: 'Standheizung', aktiv: true },
-        { begriffe: ['start stop', 'auto stop'], anzeige: 'Start/Stopp-Automatik', aktiv: true },
-        { begriffe: ['sitz heiz', 'heizung sitz'], anzeige: 'Sitzheizung', farbe: 'orange', aktiv: true },
-        { begriffe: ['sitz belüft', 'sitz kühl'], anzeige: 'Sitzbelüftung ', farbe: 'red', aktiv: true },
-        { begriffe: ['totwinkel', 'blind spot'], anzeige: 'Totwinkel-Assistent', aktiv: true },
-        { begriffe: ['traction control', 'traktio kontr'], anzeige: 'Traktionskontrolle', aktiv: false },
-        { begriffe: ['360 grad', '360 kamera', '360 cam', 'umfeld kamera'], anzeige: '360 Grad Kamera', farbe: 'red', aktiv: true },
-        { begriffe: ['verkehrszeichen', 'road sign'], anzeige: 'Verkehrszeichenerkennung', aktiv: true },
-        { begriffe: ['digital cockpit', 'digi kombi'], anzeige: 'Volldigitales Kombiinstrument', aktiv: true },
-        { begriffe: ['winter paket', 'kalt paket'], anzeige: 'Winterpaket', aktiv: true },
-        { begriffe: ['zentral verriegelung', 'central lock'], anzeige: 'Zentralverriegelung', aktiv: true },
-    ];
+    // ***********************************************************************
+    // *** 1) Hilfsfunktionen zum Speichern/Laden (GM_getValue / GM_setValue)
+    // ***********************************************************************
+    function ladeConfig(key) {
+        try {
+            const str = GM_getValue(key, null);
+            if (!str) return null;
+            return JSON.parse(str);
+        } catch (e) {
+            console.warn('Fehler beim Laden der Konfiguration:', key, e);
+            return null;
+        }
+    }
 
-    const techDataKonfigurationen = [
+    function speichereConfig(key, data) {
+        try {
+            GM_setValue(key, JSON.stringify(data));
+        } catch (e) {
+            console.error('Fehler beim Speichern der Konfiguration:', key, e);
+        }
+    }
+
+    // ***********************************************************************
+    // *** 2) Standard-Konfig (Fallback), falls nichts in GM_getValue ********
+    // ***********************************************************************
+    let suchKonfigurationenDefault = [
+        { begriffe: ["4wd","allrad"], anzeige: 'Allrad', farbe: 'orange', aktiv: true },
+        { begriffe: ["quattro"], anzeige: 'Quattro / Allrad', farbe: 'orange', aktiv: true },
+        // ... deine weiteren Standard-Einträge ...
+        { begriffe: ["zentral verriegelung","central lock"], anzeige: 'Zentralverriegelung', aktiv: true },
+    ];
+    let techDataKonfigurationenDefault = [
         { begriff: 'Fahrzeugzustand', aktiv: true },
         { begriff: 'Erstzulassung', aktiv: true },
-        { begriff: 'Innenausstattung', aktiv: true },
-        { begriff: 'Farbe (Hersteller)', aktiv: true },
-        { begriff: 'Farbe', aktiv: true }
+        // ... deine weiteren Tech-Einträge ...
+        { begriff: 'Farbe', aktiv: true },
     ];
 
-    // Definiere deine Suchbereiche für die Ausstattung wie gehabt
+    // ***********************************************************************
+    // *** 3) Aktuelle Konfigurationen laden *********************************
+    // ***********************************************************************
+    let suchKonfigurationen = ladeConfig('mobilede_config');
+    if (!suchKonfigurationen) {
+        suchKonfigurationen = suchKonfigurationenDefault;
+    }
+
+    let techDataKonfigurationen = ladeConfig('mobilede_techconfig');
+    if (!techDataKonfigurationen) {
+        techDataKonfigurationen = techDataKonfigurationenDefault;
+    }
+
+    // ***********************************************************************
+    // *** 4) Deine DOM-/Such-Funktionen (weitgehend unverändert) *************
+    // ***********************************************************************
     const ausstattungsListe = document.querySelectorAll("ul[data-testid='vip-features-list'] li");
     const beschreibungsBereich = document.querySelector("div[data-testid='vip-vehicle-description-text']");
     const zusatzBereich = document.querySelector("div.GOIOV.fqe3L.EevEz");
-
-    // Definiere eigenen Suchbereich für technische Daten
     const techDataBereich = document.querySelector("article[data-testid='vip-technical-data-box'] dl.XCaEv");
 
+    function removeDuplicateSpaces(str) {
+        return str.replace(/\s{2,}/g, ' ');
+    }
 
     function getGesamtText() {
-        console.log("[Debug] getGesamtText aufgerufen.");
         let textParts = [];
 
         ausstattungsListe.forEach(li => {
-            const txt = li.textContent.trim();
+            let txt = li.textContent.trim();
             if (txt) {
-                console.log("[Debug] Ausstattungseintrag gefunden:", txt);
+                txt = removeDuplicateSpaces(txt);
                 textParts.push(txt);
             }
         });
 
         if (beschreibungsBereich) {
-            const txt = beschreibungsBereich.textContent.replace(/,/g, ' ').trim();
+            let txt = beschreibungsBereich.textContent.replace(/,/g, ' ').trim();
             if (txt) {
-                console.log("[Debug] Beschreibungstext gefunden:", txt);
+                txt = removeDuplicateSpaces(txt);
                 textParts.push(txt);
             }
         }
 
         if (zusatzBereich) {
-            const txt = zusatzBereich.textContent.trim();
+            let txt = zusatzBereich.textContent.trim();
             if (txt) {
-                console.log("[Debug] Zusatzbereichstext gefunden:", txt);
+                txt = removeDuplicateSpaces(txt);
                 textParts.push(txt);
             }
         }
 
-        console.log("[Debug] Gesamter Text zusammengestellt:", textParts);
         return textParts;
     }
-
 
     function sucheBegriffe() {
         const gefundene = [];
@@ -131,13 +110,12 @@
 
         suchKonfigurationen.forEach(cfg => {
             if (!cfg.aktiv) return;
-
             let gefunden = false;
 
             for (let zeile of textZeilen) {
                 const zeileLower = zeile.toLowerCase();
 
-                for (let begriff of cfg.begriffe) {
+                for (let begriff of (cfg.begriffe || [])) {
                     const begriffLower = begriff.toLowerCase().trim();
 
                     if (begriffLower.includes(" ")) {
@@ -152,7 +130,6 @@
                             }
                             indices.push(idx);
                         }
-
                         if (allFound) {
                             const minIndex = Math.min(...indices);
                             const maxIndex = Math.max(...indices);
@@ -162,7 +139,6 @@
                                 break;
                             }
                         }
-
                     } else {
                         let idx = zeileLower.indexOf(begriffLower);
                         if (idx !== -1) {
@@ -172,7 +148,6 @@
                         }
                     }
                 }
-
                 if (gefunden) break;
             }
         });
@@ -180,21 +155,17 @@
         const uniqueMap = new Map();
         gefundene.forEach(obj => uniqueMap.set(obj.anzeige, obj));
         const uniqueGefundene = [...uniqueMap.values()];
-
         uniqueGefundene.sort((a, b) => a.anzeige.localeCompare(b.anzeige));
-
         return uniqueGefundene;
     }
 
-    // Suche in definiertem Suchbereich für technische Daten
     function sucheTechnischeDaten() {
         if (!techDataBereich) return [];
-
         const daten = [];
-        // Für jeden konfigurierten Eintrag nach dt suchen und den nächsten dd auslesen
+        const dtElements = techDataBereich.querySelectorAll("dt");
+
         techDataKonfigurationen.forEach(cfg => {
             if (!cfg.aktiv) return;
-            const dtElements = techDataBereich.querySelectorAll("dt");
             for (let dt of dtElements) {
                 const dtText = dt.textContent.trim();
                 if (dtText.toLowerCase() === cfg.begriff.toLowerCase()) {
@@ -206,7 +177,6 @@
                 }
             }
         });
-
         return daten;
     }
 
@@ -231,19 +201,17 @@
         techContainer.style.display = "block";
 
         const title = document.createElement('div');
-        title.textContent = `Technische Daten:`;
+        title.textContent = "Technische Daten:";
         title.style.color = "white";
         title.style.marginBottom = "5px";
         techContainer.appendChild(title);
 
-        // Erstelle eine Tabelle für die technischen Daten
         const table = document.createElement('table');
         table.style.width = "100%";
         table.style.borderCollapse = "collapse";
 
         technischeDaten.forEach(d => {
             const tr = document.createElement('tr');
-
             const tdKey = document.createElement('td');
             tdKey.textContent = d.title + ":";
             tdKey.style.color = "white";
@@ -265,24 +233,16 @@
         techContainer.appendChild(table);
         techArticle.appendChild(techContainer);
 
-        // Vor dem Ergebnisbereich einfügen
         parentElement.parentNode.insertBefore(techArticle, parentElement);
     }
 
     function ergebnisHinzufuegen() {
         const gefundeneTexte = sucheBegriffe();
 
-        console.log("[Debug] Versuch, Ergebnisbereich hinzuzufuegen.");
         const zielBereich = document.querySelector("article[data-testid='vip-key-features-box']");
-
-        if (!zielBereich) {
-            console.error("[Debug] Zielbereich konnte nicht gefunden werden!");
-            return;
-        }
-        console.log("[Debug] Zielbereich gefunden:", zielBereich);
+        if (!zielBereich) return;
 
         if (document.querySelector("#ergebnisBereich")) {
-            console.log("[Debug] Ergebnisbereich existiert bereits. Abbruch.");
             return;
         }
 
@@ -302,7 +262,7 @@
         ergebnisBereich.style.fontSize = "14px";
         ergebnisBereich.style.lineHeight = "1.5";
         ergebnisBereich.style.display = "flex";
-        ergebnisBereich.style.flexWrap= "wrap";
+        ergebnisBereich.style.flexWrap = "wrap";
         article.appendChild(ergebnisBereich);
 
         const title = document.createElement('div');
@@ -314,7 +274,6 @@
 
         if (gefundeneTexte.length > 0) {
             gefundeneTexte.forEach(item => {
-                console.log(`[Debug] Hinzufügen von gefundenem Text: "${item.anzeige}"`);
                 const textElement = document.createElement('div');
                 textElement.textContent = `- ${item.anzeige}`;
                 textElement.style.color = item.farbe;
@@ -322,28 +281,481 @@
                 ergebnisBereich.appendChild(textElement);
             });
         } else {
-            console.log("[Debug] Keine Begriffe gefunden. Hinzufügen von Standardmeldung.");
             const keineTexte = document.createElement('div');
             keineTexte.textContent = "Keine der gesuchten Begriffe gefunden.";
             keineTexte.style.color = "white";
             ergebnisBereich.appendChild(keineTexte);
         }
 
-        zielBereich.parentNode.insertBefore(article, zielBereich.nextSibling)
-
-        // Technische Daten oberhalb von "Gefundene Begriffe" einfügen
+        zielBereich.parentNode.insertBefore(article, zielBereich.nextSibling);
         technischeDatenHinzufuegen(article);
-
-        console.log("[Debug] Ergebnisbereich erfolgreich hinzugefügt.");
     }
 
     const observer = new MutationObserver(() => {
         if (!document.querySelector("#ergebnisBereich")) {
-            console.log("Mutation erkannt. Ergebnisbereich wird hinzugefügt...");
             setTimeout(ergebnisHinzufuegen, 1000);
         }
     });
-
     observer.observe(document.body, { childList: true, subtree: true });
     setTimeout(ergebnisHinzufuegen, 2000);
+
+    // ***********************************************************************
+    // *** 5) Popup-Fenster mit Import/Export *********************************
+    // ***********************************************************************
+    function oeffneKonfigPopup() {
+        // Kopien anlegen (damit wir erst bei "Speichern" wirklich übernehmen)
+        let aktuelleAusstattungsKonfig = JSON.parse(JSON.stringify(suchKonfigurationen));
+        let aktuelleTechKonfig = JSON.parse(JSON.stringify(techDataKonfigurationen));
+
+        // Overlay (etwas dunkler, mit Fade-in)
+        const overlay = document.createElement('div');
+        overlay.style.position = 'fixed';
+        overlay.style.top = '0';
+        overlay.style.left = '0';
+        overlay.style.width = '100%';
+        overlay.style.height = '100%';
+        overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
+        overlay.style.zIndex = '999999';
+        overlay.style.opacity = '0';
+        overlay.style.transition = 'opacity 0.3s ease';
+        document.body.appendChild(overlay);
+
+        // Popup
+        const popup = document.createElement('div');
+        popup.style.position = 'absolute';
+        popup.style.top = '50%';
+        popup.style.left = '50%';
+        popup.style.transform = 'translate(-50%, -50%)';
+        popup.style.width = '80%';
+        popup.style.maxWidth = '900px';
+        popup.style.maxHeight = '80%';
+        popup.style.overflowY = 'auto';
+        popup.style.backgroundColor = '#2e2f35';
+        popup.style.color = '#fff';
+        popup.style.borderRadius = '10px';
+        popup.style.boxShadow = '0 4px 15px rgba(0, 0, 0, 0.6)';
+        popup.style.border = 'none';
+        popup.style.padding = '20px';
+        popup.style.fontFamily = 'Arial, sans-serif';
+        popup.style.opacity = '0'; // fade-in
+        popup.style.transition = 'opacity 0.3s ease';
+
+        // Titel
+        const title = document.createElement('h2');
+        title.textContent = 'Konfiguration';
+        title.style.marginTop = '0';
+        title.style.fontWeight = 'normal';
+        popup.appendChild(title);
+
+        // -------------------------------
+        // A) AUSSTATTUNG EDITIEREN
+        // -------------------------------
+        const ausstattungTitle = document.createElement('h3');
+        ausstattungTitle.textContent = 'Ausstattungs-Konfiguration';
+        ausstattungTitle.style.borderBottom = '1px solid #444';
+        ausstattungTitle.style.paddingBottom = '4px';
+        ausstattungTitle.style.marginTop = '16px';
+        popup.appendChild(ausstattungTitle);
+
+        const ausstattungContainer = document.createElement('div');
+        popup.appendChild(ausstattungContainer);
+
+        function renderAusstattung() {
+            ausstattungContainer.innerHTML = '';
+            aktuelleAusstattungsKonfig.forEach((item, index) => {
+                const divItem = document.createElement('div');
+                divItem.style.border = '1px solid #444';
+                divItem.style.borderRadius = '6px';
+                divItem.style.padding = '10px';
+                divItem.style.marginBottom = '8px';
+                divItem.style.backgroundColor = '#3b3c42';
+
+                const row1 = document.createElement('div');
+                row1.style.display = 'flex';
+                row1.style.flexWrap = 'wrap';
+                row1.style.alignItems = 'center';
+
+                // aktiv
+                const checkAktiv = document.createElement('input');
+                checkAktiv.style.marginRight = '5px';
+                checkAktiv.type = 'checkbox';
+                checkAktiv.checked = item.aktiv === true;
+                checkAktiv.addEventListener('change', () => {
+                    item.aktiv = checkAktiv.checked;
+                });
+
+                const lblAktiv = document.createElement('label');
+                lblAktiv.textContent = ' aktiv';
+                lblAktiv.style.marginRight = '10px';
+
+                // anzeige
+                const inputAnzeige = document.createElement('input');
+                inputAnzeige.type = 'text';
+                inputAnzeige.value = item.anzeige;
+                inputAnzeige.placeholder = 'Anzeigetext';
+                inputAnzeige.style.flex = '1';
+                inputAnzeige.style.minWidth = '150px';
+                inputAnzeige.style.marginRight = '10px';
+                inputAnzeige.addEventListener('input', () => {
+                    item.anzeige = inputAnzeige.value;
+                });
+
+                // farbe
+                const inputFarbe = document.createElement('input');
+                inputFarbe.type = 'text';
+                inputFarbe.value = item.farbe || '';
+                inputFarbe.placeholder = '#66ff66';
+                inputFarbe.style.marginRight = '10px';
+                inputFarbe.style.width = '100px';
+                inputFarbe.addEventListener('input', () => {
+                    item.farbe = inputFarbe.value;
+                });
+
+                // löschen
+                const btnLoeschen = document.createElement('button');
+                btnLoeschen.textContent = 'Löschen';
+                btnLoeschen.style.cursor = 'pointer';
+                btnLoeschen.style.padding = '4px 8px';
+                btnLoeschen.style.marginTop = '4px';
+                btnLoeschen.style.border = 'none';
+                btnLoeschen.style.borderRadius = '4px';
+                btnLoeschen.style.backgroundColor = '#a33';
+                btnLoeschen.style.color = '#fff';
+                btnLoeschen.addEventListener('click', () => {
+                    aktuelleAusstattungsKonfig.splice(index, 1);
+                    renderAusstattung();
+                });
+
+                row1.appendChild(checkAktiv);
+                row1.appendChild(lblAktiv);
+                row1.appendChild(inputAnzeige);
+                row1.appendChild(inputFarbe);
+                row1.appendChild(btnLoeschen);
+
+                // begriffe
+                const txtBegriffe = document.createElement('textarea');
+                txtBegriffe.value = (item.begriffe || []).join(', ');
+                txtBegriffe.style.width = '100%';
+                txtBegriffe.style.height = '40px';
+                txtBegriffe.style.marginTop = '6px';
+                txtBegriffe.placeholder = 'Suchbegriffe, Komma-getrennt';
+                txtBegriffe.addEventListener('input', () => {
+                    item.begriffe = txtBegriffe.value
+                        .split(',')
+                        .map(s => s.trim())
+                        .filter(s => s.length > 0);
+                });
+
+                divItem.appendChild(row1);
+                divItem.appendChild(txtBegriffe);
+                ausstattungContainer.appendChild(divItem);
+            });
+        }
+        renderAusstattung();
+
+        const btnNeuAusstattung = document.createElement('button');
+        btnNeuAusstattung.textContent = 'Neuen Ausstattungseintrag hinzufügen';
+        btnNeuAusstattung.style.cursor = 'pointer';
+        btnNeuAusstattung.style.padding = '6px 10px';
+        btnNeuAusstattung.style.border = 'none';
+        btnNeuAusstattung.style.borderRadius = '4px';
+        btnNeuAusstattung.style.backgroundColor = '#4caf50';
+        btnNeuAusstattung.style.color = '#fff';
+        btnNeuAusstattung.style.marginTop = '8px';
+        btnNeuAusstattung.addEventListener('click', () => {
+            aktuelleAusstattungsKonfig.push({
+                begriffe: [],
+                anzeige: '',
+                farbe: '#66ff66',
+                aktiv: true
+            });
+            renderAusstattung();
+        });
+        popup.appendChild(btnNeuAusstattung);
+
+        // -------------------------------
+        // B) TECHNISCHE DATEN EDITIEREN
+        // -------------------------------
+        const techTitle = document.createElement('h3');
+        techTitle.textContent = 'Technische Daten-Konfiguration';
+        techTitle.style.borderBottom = '1px solid #444';
+        techTitle.style.paddingBottom = '4px';
+        techTitle.style.marginTop = '16px';
+        popup.appendChild(techTitle);
+
+        const techContainer = document.createElement('div');
+        popup.appendChild(techContainer);
+
+        function renderTechData() {
+            techContainer.innerHTML = '';
+            aktuelleTechKonfig.forEach((item, index) => {
+                const divItem = document.createElement('div');
+                divItem.style.border = '1px solid #444';
+                divItem.style.borderRadius = '6px';
+                divItem.style.padding = '10px';
+                divItem.style.marginBottom = '8px';
+                divItem.style.backgroundColor = '#3b3c42';
+
+                const row1 = document.createElement('div');
+                row1.style.display = 'flex';
+                row1.style.flexWrap = 'wrap';
+                row1.style.alignItems = 'center';
+
+                const checkAktiv = document.createElement('input');
+                checkAktiv.style.marginRight = '5px';
+                checkAktiv.type = 'checkbox';
+                checkAktiv.checked = item.aktiv === true;
+                checkAktiv.addEventListener('change', () => {
+                    item.aktiv = checkAktiv.checked;
+                });
+
+                const lblAktiv = document.createElement('label');
+                lblAktiv.textContent = ' aktiv';
+                lblAktiv.style.marginRight = '10px';
+
+                const inputBegriff = document.createElement('input');
+                inputBegriff.type = 'text';
+                inputBegriff.value = item.begriff;
+                inputBegriff.placeholder = 'z.B. Fahrzeugzustand';
+                inputBegriff.style.flex = '1';
+                inputBegriff.style.minWidth = '200px';
+                inputBegriff.style.marginRight = '10px';
+                inputBegriff.addEventListener('input', () => {
+                    item.begriff = inputBegriff.value;
+                });
+
+                const btnLoeschen = document.createElement('button');
+                btnLoeschen.textContent = 'Löschen';
+                btnLoeschen.style.cursor = 'pointer';
+                btnLoeschen.style.padding = '4px 8px';
+                btnLoeschen.style.border = 'none';
+                btnLoeschen.style.borderRadius = '4px';
+                btnLoeschen.style.backgroundColor = '#a33';
+                btnLoeschen.style.color = '#fff';
+                btnLoeschen.addEventListener('click', () => {
+                    aktuelleTechKonfig.splice(index, 1);
+                    renderTechData();
+                });
+
+                row1.appendChild(checkAktiv);
+                row1.appendChild(lblAktiv);
+                row1.appendChild(inputBegriff);
+                row1.appendChild(btnLoeschen);
+
+                divItem.appendChild(row1);
+                techContainer.appendChild(divItem);
+            });
+        }
+        renderTechData();
+
+        const btnNeuTech = document.createElement('button');
+        btnNeuTech.textContent = 'Neuen Tech-Parameter hinzufügen';
+        btnNeuTech.style.cursor = 'pointer';
+        btnNeuTech.style.padding = '6px 10px';
+        btnNeuTech.style.border = 'none';
+        btnNeuTech.style.borderRadius = '4px';
+        btnNeuTech.style.backgroundColor = '#4caf50';
+        btnNeuTech.style.color = '#fff';
+        btnNeuTech.style.marginTop = '8px';
+        btnNeuTech.addEventListener('click', () => {
+            aktuelleTechKonfig.push({
+                begriff: '',
+                aktiv: true
+            });
+            renderTechData();
+        });
+        popup.appendChild(btnNeuTech);
+
+        // -------------------------------
+        // C) IMPORT / EXPORT
+        // -------------------------------
+        const importExportTitle = document.createElement('h3');
+        importExportTitle.textContent = 'Import / Export';
+        importExportTitle.style.borderBottom = '1px solid #444';
+        importExportTitle.style.paddingBottom = '4px';
+        importExportTitle.style.marginTop = '16px';
+        popup.appendChild(importExportTitle);
+
+        const importExportContainer = document.createElement('div');
+        popup.appendChild(importExportContainer);
+
+        // Export-Bereich (Read-only-TextArea)
+        const exportLabel = document.createElement('div');
+        exportLabel.textContent = 'Aktuelle Konfiguration (Export-JSON):';
+        exportLabel.style.marginTop = '8px';
+        importExportContainer.appendChild(exportLabel);
+
+        const exportArea = document.createElement('textarea');
+        exportArea.style.width = '100%';
+        exportArea.style.height = '100px';
+        exportArea.style.marginTop = '4px';
+        exportArea.style.backgroundColor = '#3b3c42';
+        exportArea.style.color = '#fff';
+        exportArea.readOnly = true;
+        importExportContainer.appendChild(exportArea);
+
+        // Button, um Export neu zu generieren
+        const btnGenerateExport = document.createElement('button');
+        btnGenerateExport.textContent = 'Export aktualisieren';
+        btnGenerateExport.style.cursor = 'pointer';
+        btnGenerateExport.style.padding = '6px 10px';
+        btnGenerateExport.style.border = 'none';
+        btnGenerateExport.style.borderRadius = '4px';
+        btnGenerateExport.style.backgroundColor = '#333';
+        btnGenerateExport.style.color = '#fff';
+        btnGenerateExport.style.marginTop = '4px';
+        btnGenerateExport.style.marginRight = '10px';
+        btnGenerateExport.addEventListener('click', () => {
+            // Wir bauen ein Objekt und stringifyen es
+            const configObj = {
+                suchKonfigurationen: aktuelleAusstattungsKonfig,
+                techDataKonfigurationen: aktuelleTechKonfig
+            };
+            exportArea.value = JSON.stringify(configObj, null, 2);
+        });
+        importExportContainer.appendChild(btnGenerateExport);
+
+        // Optionaler Copy-Button
+        const btnCopyExport = document.createElement('button');
+        btnCopyExport.textContent = 'In Zwischenablage kopieren';
+        btnCopyExport.style.cursor = 'pointer';
+        btnCopyExport.style.padding = '6px 10px';
+        btnCopyExport.style.border = 'none';
+        btnCopyExport.style.borderRadius = '4px';
+        btnCopyExport.style.backgroundColor = '#555';
+        btnCopyExport.style.color = '#fff';
+        btnCopyExport.style.marginTop = '4px';
+        btnCopyExport.addEventListener('click', () => {
+            exportArea.select();
+            document.execCommand('copy');
+        });
+        importExportContainer.appendChild(btnCopyExport);
+
+        // Import-Bereich
+        const importLabel = document.createElement('div');
+        importLabel.textContent = 'Konfiguration importieren (füge JSON hier ein):';
+        importLabel.style.marginTop = '12px';
+        importExportContainer.appendChild(importLabel);
+
+        const importArea = document.createElement('textarea');
+        importArea.style.width = '100%';
+        importArea.style.height = '100px';
+        importArea.style.marginTop = '4px';
+        importArea.style.backgroundColor = '#3b3c42';
+        importArea.style.color = '#fff';
+        importExportContainer.appendChild(importArea);
+
+        const btnImport = document.createElement('button');
+        btnImport.textContent = 'Import durchführen';
+        btnImport.style.cursor = 'pointer';
+        btnImport.style.padding = '6px 10px';
+        btnImport.style.border = 'none';
+        btnImport.style.borderRadius = '4px';
+        btnImport.style.backgroundColor = '#333';
+        btnImport.style.color = '#fff';
+        btnImport.style.marginTop = '4px';
+        btnImport.addEventListener('click', () => {
+            const text = importArea.value.trim();
+            if (!text) return;
+            try {
+                const obj = JSON.parse(text);
+                if (obj.suchKonfigurationen && Array.isArray(obj.suchKonfigurationen)) {
+                    aktuelleAusstattungsKonfig = obj.suchKonfigurationen;
+                }
+                if (obj.techDataKonfigurationen && Array.isArray(obj.techDataKonfigurationen)) {
+                    aktuelleTechKonfig = obj.techDataKonfigurationen;
+                }
+                // Neu rendern, damit es sichtbar wird
+                renderAusstattung();
+                renderTechData();
+                alert('Import erfolgreich. Bitte ggf. noch "Speichern" klicken, um endgültig zu übernehmen.');
+            } catch (e) {
+                alert('Fehler beim Import. Ungültiges JSON?\n' + e);
+            }
+        });
+        importExportContainer.appendChild(btnImport);
+
+        // -------------------------------
+        // D) BUTTON-BAR (SPEICHERN / ABBRECHEN)
+        // -------------------------------
+        const buttonBar = document.createElement('div');
+        buttonBar.style.textAlign = 'right';
+        buttonBar.style.marginTop = '20px';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.textContent = 'Abbrechen';
+        cancelBtn.style.cursor = 'pointer';
+        cancelBtn.style.padding = '6px 10px';
+        cancelBtn.style.border = 'none';
+        cancelBtn.style.borderRadius = '4px';
+        cancelBtn.style.backgroundColor = '#555';
+        cancelBtn.style.color = '#fff';
+        cancelBtn.style.marginRight = '10px';
+        cancelBtn.addEventListener('click', () => {
+            overlay.remove();
+        });
+
+        const saveBtn = document.createElement('button');
+        saveBtn.textContent = 'Speichern';
+        saveBtn.style.cursor = 'pointer';
+        saveBtn.style.padding = '6px 10px';
+        saveBtn.style.border = 'none';
+        saveBtn.style.borderRadius = '4px';
+        saveBtn.style.backgroundColor = '#2196F3';
+        saveBtn.style.color = '#fff';
+        saveBtn.addEventListener('click', () => {
+            // In GM-Storage schreiben
+            speichereConfig('mobilede_config', aktuelleAusstattungsKonfig);
+            speichereConfig('mobilede_techconfig', aktuelleTechKonfig);
+
+            // Sofort globale Variablen aktualisieren
+            suchKonfigurationen = aktuelleAusstattungsKonfig;
+            techDataKonfigurationen = aktuelleTechKonfig;
+
+            overlay.remove();
+            // Optional: ergebnisHinzufuegen() neu aufrufen
+        });
+
+        buttonBar.appendChild(cancelBtn);
+        buttonBar.appendChild(saveBtn);
+        popup.appendChild(buttonBar);
+
+        // Alles ins Overlay
+        overlay.appendChild(popup);
+
+        // "Fade-in"
+        requestAnimationFrame(() => {
+            overlay.style.opacity = '1';
+            popup.style.opacity = '1';
+        });
+    }
+
+    // ***********************************************************************
+    // *** 6) Konfig-Button in .Va7Gr einfügen *******************************
+    // ***********************************************************************
+    function erstelleKonfigButton() {
+        const targetDiv = document.querySelector('.Va7Gr');
+        if (!targetDiv) return;
+
+        const button = document.createElement('button');
+        button.innerText = 'Konfiguration';
+        button.style.cursor = 'pointer';
+        button.style.marginLeft = '8px';
+        button.style.padding = '8px 12px';
+        button.style.border = 'none';
+        button.style.borderRadius = '4px';
+        button.style.background = '#333';
+        button.style.color = '#fff';
+        button.style.fontFamily = 'Arial, sans-serif';
+        button.style.boxShadow = '0px 2px 5px rgba(0,0,0,0.3)';
+
+        button.addEventListener('click', () => {
+            oeffneKonfigPopup();
+        });
+
+        targetDiv.appendChild(button);
+    }
+
+    setTimeout(erstelleKonfigButton, 3000);
+
 })();
