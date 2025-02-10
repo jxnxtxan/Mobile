@@ -74,7 +74,7 @@
         { begriffe: ['induktiv laden', 'wireless charge'], anzeige: 'Induktionsladeschale für Smartphone (Wireless Charging)', aktiv: false },
         { begriffe: ['innenspiegel abblend', 'inne spiegel auto'], anzeige: 'Innenspiegel autom. abblendend', aktiv: true },
         { begriffe: ['lenkradheizung', 'Beheizbares Lenkrad', 'lenk heiz'], anzeige: 'Lenkradheizung', aktiv: true },
-        { begriffe: ['matrix led', 'matrix scheinwer', 'matrix beam', 'matrix licht'], anzeige: 'Matrix Scheinwerfer', farbe: 'red', aktiv: true },
+        { begriffe: ['matrix led', 'matrix scheinwerfer', 'matrix beam', 'matrix licht'], anzeige: 'Matrix Scheinwerfer', farbe: 'red', aktiv: true },
         { begriffe: ['panorama', 'panoramadach', 'glas dach'], anzeige: 'Panoramadach', farbe: 'orange', aktiv: true },
         { begriffe: ['park assist', 'park hilfe'], anzeige: 'Parkassistent', aktiv: true },
         { begriffe: ['pdc', 'park dist contr'], anzeige: 'Park-Distance-Control', aktiv: true },
@@ -159,7 +159,7 @@
                 textParts.push(txt);
             }
         }
-
+        console.log("Gesamter Text:", textParts.join(' | '));
         return textParts;
     }
 
@@ -215,6 +215,7 @@
         gefundene.forEach(obj => uniqueMap.set(obj.anzeige, obj));
         const uniqueGefundene = [...uniqueMap.values()];
         uniqueGefundene.sort((a, b) => a.anzeige.localeCompare(b.anzeige));
+        console.log("Gefundene Stichwörter:", uniqueGefundene.map(item => item.anzeige));
         return uniqueGefundene;
     }
 
@@ -373,7 +374,7 @@
         overlay.style.left = '0';
         overlay.style.width = '100%';
         overlay.style.height = '100%';
-        overlay.style.zIndex = '2147483647'; 
+        overlay.style.zIndex = '2147483647';
         overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
         overlay.style.zIndex = '999999';
         overlay.style.opacity = '0';
