@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mobile.de Ausstattungssuche mit modernem Popup & Import/Export
 // @namespace    http://tampermonkey.net/
-// @version      3.2
+// @version      3.3
 // @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de. Popup jetzt mit Import/Export-Funktion (JSON).
 // @match        https://suchen.mobile.de/fahrzeuge/details.html*
 // @grant        GM_getValue
@@ -122,15 +122,26 @@
     }
 
     // ***********************************************************************
-    // *** 4) Deine DOM-/Such-Funktionen (weitgehend unverändert) *************
+    // *** 4) DOM-Auswahl & Textaufbereitung *********************************
     // ***********************************************************************
     const ausstattungsListe = document.querySelectorAll("ul[data-testid='vip-features-list'] li");
     const beschreibungsBereich = document.querySelector("div[data-testid='vip-vehicle-description-text']");
     const zusatzBereich = document.querySelector("div.GOIOV.fqe3L.EevEz");
     const techDataBereich = document.querySelector("article[data-testid='vip-technical-data-box'] dl.XCaEv");
 
-    function removeDuplicateSpaces(str) {
-        return str.replace(/\s{2,}/g, ' ');
+    // --- Hilfsfunktion, um typografische Striche & Co. zu normalisieren
+    function cleanText(text) {
+        return text
+            // Typische Striche (Halbgeviert, Geviert, ASCII-Bindestrich) in Leerzeichen umwandeln
+            .replace(/[–—\-]+/g, ' ')
+            // Zeilenumbrüche, Tabs -> Leerzeichen
+            .replace(/[\n\r\t]+/g, ' ')
+            // Mehrfache Leerzeichen reduzieren
+            .replace(/\s{2,}/g, ' ')
+            // CamelCase ggf. auftrennen
+            .replace(/([a-z])([A-Z])/g, '$1 $2')
+            .trim()
+            .toLowerCase();
     }
 
     function getGesamtText() {
@@ -139,7 +150,7 @@
         ausstattungsListe.forEach(li => {
             let txt = li.textContent.trim();
             if (txt) {
-                txt = removeDuplicateSpaces(txt);
+                txt = cleanText(txt);
                 textParts.push(txt);
             }
         });
@@ -147,7 +158,7 @@
         if (beschreibungsBereich) {
             let txt = beschreibungsBereich.textContent.replace(/,/g, ' ').trim();
             if (txt) {
-                txt = removeDuplicateSpaces(txt);
+                txt = cleanText(txt);
                 textParts.push(txt);
             }
         }
@@ -155,50 +166,96 @@
         if (zusatzBereich) {
             let txt = zusatzBereich.textContent.trim();
             if (txt) {
-                txt = removeDuplicateSpaces(txt);
+                txt = cleanText(txt);
                 textParts.push(txt);
             }
         }
-        console.log("Gesamter Text:", textParts.join(' | '));
+
+        // Debug-Ausgabe
+        console.log("Bereinigter Gesamter Text:", textParts.join(' | '));
         return textParts;
     }
 
+    // ***********************************************************************
+    // *** 4b) Neue Hilfsfunktion für Abstands-Check bei ZWEI Wörtern *******
+    // ***********************************************************************
+    function wordsWithinDistance(line, w1, w2, distance = 30) {
+        // Wir suchen alle Vorkommen von w1 in 'line'
+        let startPos = 0;
+        while (true) {
+            let pos = line.indexOf(w1, startPos);
+            if (pos === -1) {
+                // nichts mehr gefunden
+                return false;
+            }
+            // Ausschnitt um dieses gefundene Wort
+            let snippetStart = Math.max(0, pos - distance);
+            let snippetEnd = Math.min(line.length, pos + w1.length + distance);
+            let snippet = line.substring(snippetStart, snippetEnd);
+            // Prüfen, ob w2 in diesem Ausschnitt liegt
+            if (snippet.includes(w2)) {
+                return true;
+            }
+            // Sonst weitersuchen hinter dem aktuellen Fund
+            startPos = pos + 1;
+        }
+    }
+
+    // ***********************************************************************
+    // *** 5) Suche nach Begriffen *******************************************
+    // ***********************************************************************
     function sucheBegriffe() {
         const gefundene = [];
         const textZeilen = getGesamtText();
 
+        // Wir gehen jede Konfiguration durch
         suchKonfigurationen.forEach(cfg => {
             if (!cfg.aktiv) return;
             let gefunden = false;
 
+            // Wir durchlaufen jede "Zeile" (also jeden Array-Eintrag)
             for (let zeile of textZeilen) {
-                const zeileLower = zeile.toLowerCase();
+                // zeileLower ist schon "cleanText" → also in lowercase
+                const zeileLower = zeile;
 
+                // Wir probieren alle hinterlegten begriffe
                 for (let begriff of (cfg.begriffe || [])) {
                     const begriffLower = begriff.toLowerCase().trim();
 
                     if (begriffLower.includes(" ")) {
-                        const teilbegriffe = begriffLower.split(" ");
-                        let indices = [];
-                        let allFound = true;
-                        for (let tb of teilbegriffe) {
-                            let idx = zeileLower.indexOf(tb);
-                            if (idx === -1) {
-                                allFound = false;
+                        // Mehr-Wort-Begriff: splitten
+                        const teilbegriffe = begriffLower.split(/\s+/).filter(x => x);
+
+                        // Fall: genau 2 Wörter => 30-Zeichen-Abstandsprüfung
+                        if (teilbegriffe.length === 2) {
+                            let [w1, w2] = teilbegriffe;
+                            // Prüfe in beliebiger Reihenfolge
+                            if (
+                                wordsWithinDistance(zeileLower, w1, w2, 30) ||
+                                wordsWithinDistance(zeileLower, w2, w1, 30)
+                            ) {
+                                gefundene.push({ anzeige: cfg.anzeige, farbe: (cfg.farbe || '#66ff66').toLowerCase() });
+                                gefunden = true;
                                 break;
                             }
-                            indices.push(idx);
                         }
-                        if (allFound) {
-                            const minIndex = Math.min(...indices);
-                            const maxIndex = Math.max(...indices);
-                            if ((maxIndex - minIndex) <= 20) {
+                        else {
+                            // Mehr als 2 Wörter => einfache "Alle müssen vorkommen"
+                            let allFound = true;
+                            for (let tb of teilbegriffe) {
+                                if (!zeileLower.includes(tb)) {
+                                    allFound = false;
+                                    break;
+                                }
+                            }
+                            if (allFound) {
                                 gefundene.push({ anzeige: cfg.anzeige, farbe: (cfg.farbe || '#66ff66').toLowerCase() });
                                 gefunden = true;
                                 break;
                             }
                         }
                     } else {
+                        // Ein-Wort-Suche
                         let idx = zeileLower.indexOf(begriffLower);
                         if (idx !== -1) {
                             gefundene.push({ anzeige: cfg.anzeige, farbe: (cfg.farbe || '#66ff66').toLowerCase() });
@@ -211,6 +268,7 @@
             }
         });
 
+        // Duplikate filtern, sortieren
         const uniqueMap = new Map();
         gefundene.forEach(obj => uniqueMap.set(obj.anzeige, obj));
         const uniqueGefundene = [...uniqueMap.values()];
@@ -219,6 +277,9 @@
         return uniqueGefundene;
     }
 
+    // ***********************************************************************
+    // *** 6) Suche nach Technischen Daten ***********************************
+    // ***********************************************************************
     function sucheTechnischeDaten() {
         if (!techDataBereich) return [];
         const daten = [];
@@ -296,6 +357,9 @@
         parentElement.parentNode.insertBefore(techArticle, parentElement);
     }
 
+    // ***********************************************************************
+    // *** 7) Ergebnisse zusammenfassen **************************************
+    // ***********************************************************************
     function ergebnisHinzufuegen() {
         const gefundeneTexte = sucheBegriffe();
 
@@ -351,32 +415,34 @@
         technischeDatenHinzufuegen(article);
     }
 
+    // MutationObserver, um Dynamik abzufangen
     const observer = new MutationObserver(() => {
         if (!document.querySelector("#ergebnisBereich")) {
             setTimeout(ergebnisHinzufuegen, 1000);
         }
     });
     observer.observe(document.body, { childList: true, subtree: true });
+
+    // Initialer Aufruf nach Seitenaufbau
     setTimeout(ergebnisHinzufuegen, 2000);
 
     // ***********************************************************************
-    // *** 5) Popup-Fenster mit Import/Export *********************************
+    // *** 8) Popup-Fenster mit Import/Export ********************************
     // ***********************************************************************
     function oeffneKonfigPopup() {
         // Kopien anlegen (damit wir erst bei "Speichern" wirklich übernehmen)
         let aktuelleAusstattungsKonfig = JSON.parse(JSON.stringify(suchKonfigurationen));
         let aktuelleTechKonfig = JSON.parse(JSON.stringify(techDataKonfigurationen));
 
-        // Overlay (etwas dunkler, mit Fade-in)
+        // Overlay
         const overlay = document.createElement('div');
         overlay.style.position = 'fixed';
         overlay.style.top = '0';
         overlay.style.left = '0';
         overlay.style.width = '100%';
         overlay.style.height = '100%';
-        overlay.style.zIndex = '2147483647';
-        overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
         overlay.style.zIndex = '999999';
+        overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
         overlay.style.opacity = '0';
         overlay.style.transition = 'opacity 0.3s ease';
         document.body.appendChild(overlay);
@@ -641,7 +707,7 @@
         const importExportContainer = document.createElement('div');
         popup.appendChild(importExportContainer);
 
-        // Export-Bereich (Read-only-TextArea)
+        // --- Export (JSON) ---
         const exportLabel = document.createElement('div');
         exportLabel.textContent = 'Aktuelle Konfiguration (Export-JSON):';
         exportLabel.style.marginTop = '8px';
@@ -656,7 +722,7 @@
         exportArea.readOnly = true;
         importExportContainer.appendChild(exportArea);
 
-        // Button, um Export neu zu generieren
+        // Button: Export erzeugen
         const btnGenerateExport = document.createElement('button');
         btnGenerateExport.textContent = 'Export aktualisieren';
         btnGenerateExport.style.cursor = 'pointer';
@@ -668,7 +734,7 @@
         btnGenerateExport.style.marginTop = '4px';
         btnGenerateExport.style.marginRight = '10px';
         btnGenerateExport.addEventListener('click', () => {
-            // Wir bauen ein Objekt und stringifyen es
+            // Objekt zusammenbauen
             const configObj = {
                 suchKonfigurationen: aktuelleAusstattungsKonfig,
                 techDataKonfigurationen: aktuelleTechKonfig
@@ -677,7 +743,7 @@
         });
         importExportContainer.appendChild(btnGenerateExport);
 
-        // Optionaler Copy-Button
+        // Button: Copy to Clipboard
         const btnCopyExport = document.createElement('button');
         btnCopyExport.textContent = 'In Zwischenablage kopieren';
         btnCopyExport.style.cursor = 'pointer';
@@ -693,7 +759,7 @@
         });
         importExportContainer.appendChild(btnCopyExport);
 
-        // Import-Bereich
+        // --- Import (JSON) ---
         const importLabel = document.createElement('div');
         importLabel.textContent = 'Konfiguration importieren (füge JSON hier ein):';
         importLabel.style.marginTop = '12px';
@@ -727,7 +793,7 @@
                 if (obj.techDataKonfigurationen && Array.isArray(obj.techDataKonfigurationen)) {
                     aktuelleTechKonfig = obj.techDataKonfigurationen;
                 }
-                // Neu rendern, damit es sichtbar wird
+                // Neu rendern
                 renderAusstattung();
                 renderTechData();
                 alert('Import erfolgreich. Bitte ggf. noch "Speichern" klicken, um endgültig zu übernehmen.');
@@ -766,16 +832,15 @@
         saveBtn.style.backgroundColor = '#2196F3';
         saveBtn.style.color = '#fff';
         saveBtn.addEventListener('click', () => {
-            // In GM-Storage schreiben
+            // Speichern in GM-Storage
             speichereConfig('mobilede_config', aktuelleAusstattungsKonfig);
             speichereConfig('mobilede_techconfig', aktuelleTechKonfig);
 
-            // Sofort globale Variablen aktualisieren
+            // Globale Variablen sofort aktualisieren
             suchKonfigurationen = aktuelleAusstattungsKonfig;
             techDataKonfigurationen = aktuelleTechKonfig;
 
             overlay.remove();
-            // Optional: ergebnisHinzufuegen() neu aufrufen
         });
 
         buttonBar.appendChild(cancelBtn);
@@ -793,7 +858,7 @@
     }
 
     // ***********************************************************************
-    // *** 6) Konfig-Button in .Va7Gr einfügen *******************************
+    // *** 9) Konfig-Button einfügen *****************************************
     // ***********************************************************************
     function erstelleKonfigButton() {
         const targetDiv = document.querySelector('.Va7Gr');
