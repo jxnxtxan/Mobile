@@ -8,6 +8,16 @@
 // @grant        GM_setValue
 // ==/UserScript==
 
+// ==UserScript==
+// @name         Mobile.de Ausstattungssuche mit modernem Popup & Import/Export
+// @namespace    http://tampermonkey.net/
+// @version      1.1
+// @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de. Popup jetzt mit Import/Export-Funktion (JSON). Angepasst für bis zu 4 Wörter in einem Suchbegriff.
+// @match        https://suchen.mobile.de/fahrzeuge/details.html*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// ==/UserScript==
+
 (function() {
     'use strict';
 
@@ -52,13 +62,13 @@
         { begriffe: ['armlehne', 'lehne'], anzeige: 'Armlehne', aktiv: false },
         { begriffe: ['apple carplay'], anzeige: 'Apple Carplay', aktiv: true },
         { begriffe: ['android auto'], anzeige: 'Android Auto', aktiv: true },
-        { begriffe: ['außenspiegel elek verst', 'elek spiegel', 'seitenspiegel'], anzeige: 'Außenspiegel elektr. verstellbar', aktiv: true },
-        { begriffe: ['außenspiegel elek heiz', 'außenspiegel heiz'], anzeige: 'Außenspiegel elektr. verstell- und heizbar', aktiv: true },
+        { begriffe: ['außenspiegel elek verst', 'elek spiegel'], anzeige: 'Außenspiegel elektr. verstellbar', aktiv: true },
+        { begriffe: ['außenspiegel heiz'], anzeige: 'Außenspiegel beheizbar', aktiv: true },
         { begriffe: ['Bang & Olufsen', 'b&o', 'Bang Olufsen'], anzeige: 'Bang & Olufsen Sound System', farbe: 'red', aktiv: true },
         { begriffe: ['Beats'], anzeige: 'Beats Sound System', farbe: 'red', aktiv: true },
         { begriffe: ['blendfrei fernlicht', 'anti blend licht', 'fernlicht assist', 'auto fernlicht'], anzeige: 'Fernlicht Assistent', farbe: 'orange', aktiv: true },
         { begriffe: ['brems assist', 'brake assist'], anzeige: 'Bremsassistent', aktiv: true },
-        { begriffe: ['Business-Paket Professional', 'busin', 'Business', 'Buisn paket profess'], anzeige: 'Business Paket', aktiv: true },
+        { begriffe: ['Business-Paket Professional', 'busin', 'Business', 'Busin paket profess'], anzeige: 'Business Paket', aktiv: true },
         { begriffe: ['Burmester', 'burme'], anzeige: 'Burmester Sound System', farbe: 'red', aktiv: true },
         { begriffe: ['canton'], anzeige: 'Canton Sound System', farbe: 'red', aktiv: true },
         { begriffe: ['dachhimmel anth', 'himmel anth', 'Dachhimmel schwarz', 'Dachhimmel Stoff schwarz', 'dachhim schwarz'], anzeige: 'Dachhimmel Anthrazit / Schwarz', aktiv: true },
@@ -177,28 +187,62 @@
     }
 
     // ***********************************************************************
-    // *** 4b) Neue Hilfsfunktion für Abstands-Check bei ZWEI Wörtern *******
+    // *** NEU: Hilfsfunktion, um x Wörter (1..4) mit max. 30 Zeichen Distanz
+    // *** in beliebiger Reihenfolge in einer Zeile zu erkennen.
     // ***********************************************************************
-    function wordsWithinDistance(line, w1, w2, distance = 30) {
-        // Wir suchen alle Vorkommen von w1 in 'line'
-        let startPos = 0;
-        while (true) {
-            let pos = line.indexOf(w1, startPos);
-            if (pos === -1) {
-                // nichts mehr gefunden
+    function allWordsWithinDistance(line, words, distance = 30) {
+        // Finde alle Vorkommen jedes Wortes:
+        // positions[i] = Liste der Fundstellen für words[i].
+        let positions = [];
+        for (let w of words) {
+            const posList = [];
+            let startIndex = 0;
+            while (true) {
+                let idx = line.indexOf(w, startIndex);
+                if (idx === -1) break;
+                posList.push(idx);
+                startIndex = idx + 1;
+            }
+            // Falls ein Wort gar nicht in der Zeile vorkommt:
+            if (posList.length === 0) {
                 return false;
             }
-            // Ausschnitt um dieses gefundene Wort
-            let snippetStart = Math.max(0, pos - distance);
-            let snippetEnd = Math.min(line.length, pos + w1.length + distance);
-            let snippet = line.substring(snippetStart, snippetEnd);
-            // Prüfen, ob w2 in diesem Ausschnitt liegt
-            if (snippet.includes(w2)) {
+            positions.push(posList);
+        }
+
+        // Bei nur 1 Wort reicht es, dass wir es gefunden haben:
+        if (words.length === 1) {
+            return positions[0].length > 0; // schon oben geprüft, also true
+        }
+
+        // Für 2+ Wörter müssen wir schauen, ob es eine Kombination der Fundstellen gibt,
+        // bei der die minimale und maximale Position innerhalb "distance" liegen.
+        //
+        // Wir erzeugen das kartesische Produkt aller Listen => jede mögliche Kombination
+        // (Achtung: für 4 Wörter kann das größer werden, aber noch überschaubar).
+        function cartesian(arr) {
+            return arr.reduce((acc, val) => {
+                let res = [];
+                acc.forEach(a => {
+                    val.forEach(b => {
+                        res.push(a.concat(b));
+                    });
+                });
+                return res;
+            }, [[]]);
+        }
+
+        const combos = cartesian(positions);
+
+        // Prüfe jede Kombination
+        for (let combo of combos) {
+            const minPos = Math.min(...combo);
+            const maxPos = Math.max(...combo);
+            if (maxPos - minPos <= distance) {
                 return true;
             }
-            // Sonst weitersuchen hinter dem aktuellen Fund
-            startPos = pos + 1;
         }
+        return false;
     }
 
     // ***********************************************************************
@@ -215,53 +259,40 @@
 
             // Wir durchlaufen jede "Zeile" (also jeden Array-Eintrag)
             for (let zeile of textZeilen) {
-                // zeileLower ist schon "cleanText" → also in lowercase
+                // zeile ist bereits "cleanText"
                 const zeileLower = zeile;
 
-                // Wir probieren alle hinterlegten begriffe
+                // Probiere alle hinterlegten begriffe
                 for (let begriff of (cfg.begriffe || [])) {
                     const begriffLower = begriff.toLowerCase().trim();
+                    // Split in Teilwörter
+                    const teilbegriffe = begriffLower.split(/\s+/).filter(x => x);
 
-                    if (begriffLower.includes(" ")) {
-                        // Mehr-Wort-Begriff: splitten
-                        const teilbegriffe = begriffLower.split(/\s+/).filter(x => x);
+                    if (teilbegriffe.length === 0) {
+                        continue;
+                    }
 
-                        // Fall: genau 2 Wörter => 30-Zeichen-Abstandsprüfung
-                        if (teilbegriffe.length === 2) {
-                            let [w1, w2] = teilbegriffe;
-                            // Prüfe in beliebiger Reihenfolge
-                            if (
-                                wordsWithinDistance(zeileLower, w1, w2, 30) ||
-                                wordsWithinDistance(zeileLower, w2, w1, 30)
-                            ) {
-                                gefundene.push({ anzeige: cfg.anzeige, farbe: (cfg.farbe || '#66ff66').toLowerCase() });
-                                gefunden = true;
-                                break;
-                            }
-                        }
-                        else {
-                            // Mehr als 2 Wörter => einfache "Alle müssen vorkommen"
-                            let allFound = true;
-                            for (let tb of teilbegriffe) {
-                                if (!zeileLower.includes(tb)) {
-                                    allFound = false;
+                    // Prüfe, ob alle (1..n) Teilbegriffe innerhalb distance liegen
+                    if (allWordsWithinDistance(zeileLower, teilbegriffe, 30)) {
+                        // Ggf. "verbotene" Wörter prüfen?
+                        if (cfg.verboten && Array.isArray(cfg.verboten)) {
+                            // Falls in dem Zeilen-Text ein "verbotenes" Vorkommt => ignorieren
+                            let ignorieren = false;
+                            for (let v of cfg.verboten) {
+                                if (zeileLower.includes(v.toLowerCase())) {
+                                    ignorieren = true;
                                     break;
                                 }
                             }
-                            if (allFound) {
-                                gefundene.push({ anzeige: cfg.anzeige, farbe: (cfg.farbe || '#66ff66').toLowerCase() });
-                                gefunden = true;
-                                break;
+                            if (ignorieren) {
+                                continue; // dieses Treffer ignorieren
                             }
                         }
-                    } else {
-                        // Ein-Wort-Suche
-                        let idx = zeileLower.indexOf(begriffLower);
-                        if (idx !== -1) {
-                            gefundene.push({ anzeige: cfg.anzeige, farbe: (cfg.farbe || '#66ff66').toLowerCase() });
-                            gefunden = true;
-                            break;
-                        }
+
+                        // Gefunden
+                        gefundene.push({ anzeige: cfg.anzeige, farbe: (cfg.farbe || '#66ff66').toLowerCase() });
+                        gefunden = true;
+                        break;
                     }
                 }
                 if (gefunden) break;
@@ -366,6 +397,7 @@
         const zielBereich = document.querySelector("article[data-testid='vip-key-features-box']");
         if (!zielBereich) return;
 
+        // Falls schon erstellt, nicht noch mal
         if (document.querySelector("#ergebnisBereich")) {
             return;
         }
@@ -489,6 +521,12 @@
         popup.appendChild(ausstattungContainer);
 
         function renderAusstattung() {
+
+            // Erst nach "anzeige" sortieren (A-Z)
+            aktuelleAusstattungsKonfig.sort((a, b) => {
+                return (a.anzeige || '').localeCompare(b.anzeige || '');
+            });
+
             ausstattungContainer.innerHTML = '';
             aktuelleAusstattungsKonfig.forEach((item, index) => {
                 const divItem = document.createElement('div');
@@ -566,7 +604,7 @@
                 txtBegriffe.style.width = '100%';
                 txtBegriffe.style.height = '40px';
                 txtBegriffe.style.marginTop = '6px';
-                txtBegriffe.placeholder = 'Suchbegriffe, Komma-getrennt';
+                txtBegriffe.placeholder = 'Suchbegriffe, Komma-getrennt (z.B. "elek sitz, elek verstell sitz heiz")';
                 txtBegriffe.addEventListener('input', () => {
                     item.begriffe = txtBegriffe.value
                         .split(',')
