@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mobile.de Ausstattungssuche mit modernem Popup & Import/Export
 // @namespace    http://tampermonkey.net/
-// @version      1.1.2
+// @version      1.1.3
 // @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de
 // @match        https://suchen.mobile.de/fahrzeuge/details.html*
 // @grant        GM_getValue
