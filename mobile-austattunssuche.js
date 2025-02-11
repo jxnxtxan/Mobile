@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         Mobile.de Ausstattungssuche mit modernem Popup & Import/Export
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.1.2
 // @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de
 // @match        https://suchen.mobile.de/fahrzeuge/details.html*
 // @grant        GM_getValue
 // @grant        GM_setValue
-// ==/UserScript==
+// ==/UserScript==   
 
 (function() {
     'use strict';
@@ -470,6 +470,21 @@
         overlay.style.transition = 'opacity 0.3s ease';
         document.body.appendChild(overlay);
 
+        // ESC schließen - Event-Listener
+        function escListener(e) {
+            if (e.key === 'Escape') {
+                // entspricht "Abbrechen"
+                removeOverlay();
+            }
+        }
+        document.addEventListener('keydown', escListener);
+    
+        function removeOverlay() {
+            // Overlay und ESC-Listener entfernen => "Abbrechen"
+            document.removeEventListener('keydown', escListener);
+            overlay.remove();
+        }
+
         // Popup
         const popup = document.createElement('div');
         popup.style.position = 'absolute';
@@ -849,7 +864,7 @@
         cancelBtn.style.color = '#fff';
         cancelBtn.style.marginRight = '10px';
         cancelBtn.addEventListener('click', () => {
-            overlay.remove();
+            removeOverlay();
         });
 
         const saveBtn = document.createElement('button');
@@ -869,7 +884,7 @@
             suchKonfigurationen = aktuelleAusstattungsKonfig;
             techDataKonfigurationen = aktuelleTechKonfig;
 
-            overlay.remove();
+            removeOverlay();
         });
 
         buttonBar.appendChild(cancelBtn);
