@@ -527,11 +527,26 @@
         popup.appendChild(ausstattungContainer);
 
         function renderAusstattung() {
+    // Ersetze deine bisherige Sortierung durch Folgendes:
+    aktuelleAusstattungsKonfig.sort((a, b) => {
+        const aText = (a.anzeige || '').trim();
+        const bText = (b.anzeige || '').trim();
 
-            // Erst nach "anzeige" sortieren (A-Z)
-            aktuelleAusstattungsKonfig.sort((a, b) => {
-                return (a.anzeige || '').localeCompare(b.anzeige || '');
-            });
+        // 1) Sind beide Einträge leer?
+        if (!aText && !bText) {
+            return 0; // Beide leer -> Originalreihenfolge bleibt
+        }
+        // 2) 'a' ist leer, b nicht -> a soll nach b kommen
+        if (!aText) {
+            return 1;
+        }
+        // 3) 'b' ist leer, a nicht -> b soll nach a kommen
+        if (!bText) {
+            return -1;
+        }
+        // 4) Beide nicht leer -> normal alphabetisch
+        return aText.localeCompare(bText);
+    });
 
             ausstattungContainer.innerHTML = '';
             aktuelleAusstattungsKonfig.forEach((item, index) => {
