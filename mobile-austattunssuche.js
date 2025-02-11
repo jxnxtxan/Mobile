@@ -633,10 +633,25 @@
                         .filter(s => s.length > 0);
                 });
 
+                // Verboten-Feld (verbotene Wörter)
+                 const txtVerboten = document.createElement('textarea');
+                txtVerboten.value = (item.verboten || []).join(', ');
+                txtVerboten.style.width = '100%';
+                txtVerboten.style.height = '30px';
+                txtVerboten.style.marginTop = '4px';
+                txtVerboten.placeholder = 'Verbotene Wörter, Komma-getrennt';
+                txtVerboten.addEventListener('input', () => {
+                item.verboten = txtVerboten.value
+               .split(',')
+               .map(s => s.trim())
+               .filter(s => s.length > 0);
+                 });
+
                 divItem.appendChild(row1);
                 divItem.appendChild(txtBegriffe);
+                divItem.appendChild(txtVerboten);  // Verboten-Feld hinzufügen
                 ausstattungContainer.appendChild(divItem);
-            });
+                });
         }
         renderAusstattung();
 
