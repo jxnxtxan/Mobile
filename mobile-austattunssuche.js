@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         Mobile.de Ausstattungssuche mit modernem Popup & Import/Export
 // @namespace    http://tampermonkey.net/
-// @version      1.1.3
-// @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de
+// @version      1.1.4
+// @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de, mit Konfig-Popup & Drag&Drop für Tech-Daten
 // @match        https://suchen.mobile.de/fahrzeuge/details.html*
 // @grant        GM_getValue
 // @grant        GM_setValue
-// ==/UserScript==   
+// ==/UserScript==
 
 (function() {
     'use strict';
@@ -101,6 +101,7 @@
         { begriffe: ['winter paket', 'kalt paket'], anzeige: 'Winterpaket', aktiv: true },
         { begriffe: ['zentral verriegelung', 'central lock', 'Zentralverriegelung'], anzeige: 'Zentralverriegelung', aktiv: true },
     ];
+
     let techDataKonfigurationenDefault = [
         { begriff: 'Fahrzeugzustand', aktiv: true },
         { begriff: 'Erstzulassung', aktiv: true },
@@ -208,9 +209,7 @@
 
         // Für 2+ Wörter müssen wir schauen, ob es eine Kombination der Fundstellen gibt,
         // bei der die minimale und maximale Position innerhalb "distance" liegen.
-        //
-        // Wir erzeugen das kartesische Produkt aller Listen => jede mögliche Kombination
-        // (Achtung: für 4 Wörter kann das größer werden, aber noch überschaubar).
+
         function cartesian(arr) {
             return arr.reduce((acc, val) => {
                 let res = [];
@@ -250,7 +249,6 @@
         // Text zwischen den Keywords extrahieren
         return text.substring(start, end);
     }
-    
 
     // ***********************************************************************
     // *** 5) Suche nach Begriffen *******************************************
@@ -527,26 +525,15 @@
         popup.appendChild(ausstattungContainer);
 
         function renderAusstattung() {
-    // Ersetze deine bisherige Sortierung durch Folgendes:
-    aktuelleAusstattungsKonfig.sort((a, b) => {
-        const aText = (a.anzeige || '').trim();
-        const bText = (b.anzeige || '').trim();
-
-        // 1) Sind beide Einträge leer?
-        if (!aText && !bText) {
-            return 0; // Beide leer -> Originalreihenfolge bleibt
-        }
-        // 2) 'a' ist leer, b nicht -> a soll nach b kommen
-        if (!aText) {
-            return 1;
-        }
-        // 3) 'b' ist leer, a nicht -> b soll nach a kommen
-        if (!bText) {
-            return -1;
-        }
-        // 4) Beide nicht leer -> normal alphabetisch
-        return aText.localeCompare(bText);
-    });
+            // Nur zur Übersicht: Standardsortierung nach Anzeigetext (kann man weglassen, falls du Originalreihenfolge willst)
+            aktuelleAusstattungsKonfig.sort((a, b) => {
+                const aText = (a.anzeige || '').trim();
+                const bText = (b.anzeige || '').trim();
+                if (!aText && !bText) return 0;
+                if (!aText) return 1;
+                if (!bText) return -1;
+                return aText.localeCompare(bText);
+            });
 
             ausstattungContainer.innerHTML = '';
             aktuelleAusstattungsKonfig.forEach((item, index) => {
@@ -633,25 +620,25 @@
                         .filter(s => s.length > 0);
                 });
 
-                // Verboten-Feld (verbotene Wörter)
-                 const txtVerboten = document.createElement('textarea');
+                // Verboten-Feld
+                const txtVerboten = document.createElement('textarea');
                 txtVerboten.value = (item.verboten || []).join(', ');
                 txtVerboten.style.width = '100%';
                 txtVerboten.style.height = '30px';
                 txtVerboten.style.marginTop = '4px';
                 txtVerboten.placeholder = 'Verbotene Wörter, Komma-getrennt';
                 txtVerboten.addEventListener('input', () => {
-                item.verboten = txtVerboten.value
-               .split(',')
-               .map(s => s.trim())
-               .filter(s => s.length > 0);
-                 });
+                    item.verboten = txtVerboten.value
+                        .split(',')
+                        .map(s => s.trim())
+                        .filter(s => s.length > 0);
+                });
 
                 divItem.appendChild(row1);
                 divItem.appendChild(txtBegriffe);
-                divItem.appendChild(txtVerboten);  // Verboten-Feld hinzufügen
+                divItem.appendChild(txtVerboten);
                 ausstattungContainer.appendChild(divItem);
-                });
+            });
         }
         renderAusstattung();
 
@@ -690,6 +677,10 @@
 
         function renderTechData() {
             techContainer.innerHTML = '';
+
+            // Variable für das aktuell gezogene Element
+            let draggedTechItemIndex = null;
+
             aktuelleTechKonfig.forEach((item, index) => {
                 const divItem = document.createElement('div');
                 divItem.style.border = '1px solid #444';
@@ -697,6 +688,37 @@
                 divItem.style.padding = '10px';
                 divItem.style.marginBottom = '8px';
                 divItem.style.backgroundColor = '#3b3c42';
+
+                // --- DRAG & DROP Einstellungen ---
+                divItem.draggable = true;
+                // Bei DragStart merken wir uns, welches Item gezogen wird
+                divItem.addEventListener('dragstart', e => {
+                    draggedTechItemIndex = index;
+                    e.dataTransfer.setData('text/plain', ''); // manche Browser brauchen das
+                    e.dataTransfer.effectAllowed = 'move';
+                });
+                // Damit "drop" funktioniert, müssen wir auf dem Ziel "dragover" verhindern
+                divItem.addEventListener('dragover', e => {
+                    e.preventDefault();
+                });
+                divItem.addEventListener('drop', e => {
+                    e.preventDefault();
+                    const targetIndex = index;
+                    if (draggedTechItemIndex !== null && draggedTechItemIndex !== targetIndex) {
+                        // Element aus alter Position entfernen
+                        const itemToMove = aktuelleTechKonfig[draggedTechItemIndex];
+                        aktuelleTechKonfig.splice(draggedTechItemIndex, 1);
+
+                        // Falls wir nach unten gezogen haben und das Element dabei 
+                        // eine Position weiter vorne entfernt wurde, muss targetIndex -1
+                        if (draggedTechItemIndex < targetIndex) {
+                            aktuelleTechKonfig.splice(targetIndex - 1, 0, itemToMove);
+                        } else {
+                            aktuelleTechKonfig.splice(targetIndex, 0, itemToMove);
+                        }
+                        renderTechData();
+                    }
+                });
 
                 const row1 = document.createElement('div');
                 row1.style.display = 'flex';
@@ -748,6 +770,7 @@
                 techContainer.appendChild(divItem);
             });
         }
+
         renderTechData();
 
         const btnNeuTech = document.createElement('button');
