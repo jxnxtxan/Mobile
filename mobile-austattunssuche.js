@@ -964,7 +964,6 @@
         const button = document.createElement('button');
         button.innerText = 'Konfiguration';
         button.style.cursor = 'pointer';
-        button.style.marginLeft = '8px';
         button.style.padding = '8px 12px';
         button.style.border = 'none';
         button.style.borderRadius = '4px';
