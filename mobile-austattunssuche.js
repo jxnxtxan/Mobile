@@ -1,18 +1,8 @@
 // ==UserScript==
 // @name         Mobile.de Ausstattungssuche mit modernem Popup & Import/Export
 // @namespace    http://tampermonkey.net/
-// @version      3.3
-// @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de. Popup jetzt mit Import/Export-Funktion (JSON).
-// @match        https://suchen.mobile.de/fahrzeuge/details.html*
-// @grant        GM_getValue
-// @grant        GM_setValue
-// ==/UserScript==
-
-// ==UserScript==
-// @name         Mobile.de Ausstattungssuche mit modernem Popup & Import/Export
-// @namespace    http://tampermonkey.net/
 // @version      1.1
-// @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de. Popup jetzt mit Import/Export-Funktion (JSON). Angepasst für bis zu 4 Wörter in einem Suchbegriff.
+// @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de
 // @match        https://suchen.mobile.de/fahrzeuge/details.html*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -75,8 +65,8 @@
         { begriffe: ['dachhimmel alcantara', 'himmel alcant'], anzeige: 'Dachhimmel Alcantara', aktiv: true },
         { begriffe: ['elek fenst'], anzeige: 'Elektr. Fensterheber', aktiv: false },
         { begriffe: ['elek heckklappe'], anzeige: 'Elektr. Heckklappe', aktiv: false },
-        { begriffe: ['sitz elek', 'sitz elek verstell'], anzeige: 'Elektr. Sitzeinstellung', aktiv: true },
-        { begriffe: ['memory sitz', 'sitz memory', 'sitz elek verstell memo'], anzeige: 'Elektr. Sitzeinstellung mit Memory-Funktion', farbe: 'red', aktiv: true },
+        { begriffe: ['sitz elek verstell'], anzeige: 'Elektr. Sitzeinstellung', aktiv: true },
+        { begriffe: ['memory sitz', 'sitz memory', 'sitz elek verstell memory'], anzeige: 'Elektr. Sitzeinstellung mit Memory-Funktion', farbe: 'red', aktiv: true },
         { begriffe: ['garantie'], anzeige: 'Garantie', aktiv: false },
         { begriffe: ['head up', 'HUD', 'head'], anzeige: 'Head-Up Display', farbe: 'red', aktiv: true },
         { begriffe: ['heckantrieb', 'antrieb heck'], anzeige: 'Heckantrieb', aktiv: false },
@@ -94,21 +84,22 @@
         { begriffe: ['spiegel klappbar', 'elek spiegel klapp'], anzeige: 'Seitenspiegel anklappbar', aktiv: true },
         { begriffe: ['scheckheft gepflegt', 'scheckheft'], anzeige: 'Scheckheftgepflegt', farbe: 'red', aktiv: true },
         { begriffe: ['keyless', 'schlüssel frei', 'schlüssellose zentral'], anzeige: 'Schlüssellose Zentralverriegelung (Keyless)', farbe: 'orange', aktiv: true },
-        { begriffe: ['Servoschließung tür', 'soft close'], verboten: ['pedal', 'virtuell'], anzeige: 'Softclose', aktiv: true },
+        { begriffe: ['Servoschließung tür', 'soft close', 'softclose'], verboten: ['pedal', 'virtuell'], anzeige: 'Softclose', aktiv: true },
         { begriffe: ['Sonnenschutzverglasung'], anzeige: 'Sonnenschutzverglasung', aktiv: true },
         { begriffe: ['Sonnenschutzverglasung abgedunkelt'], anzeige: 'Sonnenschutzverglasung abgedunkelt', aktiv: true },
         { begriffe: ['spurhalte assist', 'lane assist'], anzeige: 'Spurhalteassistent', aktiv: true },
         { begriffe: ['Standheizung', 'standhei'], anzeige: 'Standheizung', aktiv: true },
-        { begriffe: ['start stop', 'auto stop'], anzeige: 'Start/Stopp-Automatik', aktiv: true },
+        { begriffe: ['standbelüf'], anzeige: 'Standbelüftung', aktiv: true },
+        { begriffe: ['start stop', 'auto stop'], anzeige: 'Start/Stopp-Automatik', aktiv: false },
         { begriffe: ['sitz heiz', 'heizung sitz'], anzeige: 'Sitzheizung', farbe: 'orange', aktiv: true },
         { begriffe: ['sitz belüft', 'sitz kühl'], anzeige: 'Sitzbelüftung', farbe: 'red', aktiv: true },
         { begriffe: ['totwinkel', 'blind spot'], anzeige: 'Totwinkel-Assistent', aktiv: true },
         { begriffe: ['traction control', 'traktio kontr'], anzeige: 'Traktionskontrolle', aktiv: false },
-        { begriffe: ['360 grad', '360 kamera', '360 cam', 'umfeld kamera'], anzeige: '360 Grad Kamera', farbe: 'red', aktiv: true },
+        { begriffe: ['360 grad', '360 kamera', '360 cam', 'umfeld kamera', 'surround cam'], anzeige: '360 Grad Kamera', farbe: 'red', aktiv: true },
         { begriffe: ['verkehrszeichen', 'road sign'], anzeige: 'Verkehrszeichenerkennung', aktiv: true },
         { begriffe: ['digital cockpit', 'digi kombi'], anzeige: 'Volldigitales Kombiinstrument', aktiv: true },
         { begriffe: ['winter paket', 'kalt paket'], anzeige: 'Winterpaket', aktiv: true },
-        { begriffe: ['zentral verriegelung', 'central lock'], anzeige: 'Zentralverriegelung', aktiv: true },
+        { begriffe: ['zentral verriegelung', 'central lock', 'Zentralverriegelung'], anzeige: 'Zentralverriegelung', aktiv: true },
     ];
     let techDataKonfigurationenDefault = [
         { begriff: 'Fahrzeugzustand', aktiv: true },
