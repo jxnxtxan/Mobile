@@ -236,51 +236,51 @@
         return false;
     }
 
+    function getTextBetweenWords(text, keywords) {
+        // Positionen der Keywords im Text finden
+        const positions = keywords.map(kw => text.indexOf(kw));
+        
+        // Prüfen, ob alle Keywords gefunden wurden
+        if (positions.includes(-1)) return ''; // Falls ein Keyword nicht gefunden wurde, abbrechen
+    
+        // Den kleinsten und größten Index ermitteln (Anfang & Ende)
+        const start = Math.min(...positions);
+        const end = Math.max(...positions) + keywords[keywords.length - 1].length;
+    
+        // Text zwischen den Keywords extrahieren
+        return text.substring(start, end);
+    }
+    
+
     // ***********************************************************************
     // *** 5) Suche nach Begriffen *******************************************
     // ***********************************************************************
     function sucheBegriffe() {
         const gefundene = [];
         const textZeilen = getGesamtText();
-
-        // Wir gehen jede Konfiguration durch
+    
         suchKonfigurationen.forEach(cfg => {
             if (!cfg.aktiv) return;
             let gefunden = false;
-
-            // Wir durchlaufen jede "Zeile" (also jeden Array-Eintrag)
+    
             for (let zeile of textZeilen) {
-                // zeile ist bereits "cleanText"
                 const zeileLower = zeile;
-
-                // Probiere alle hinterlegten begriffe
+    
                 for (let begriff of (cfg.begriffe || [])) {
-                    const begriffLower = begriff.toLowerCase().trim();
-                    // Split in Teilwörter
-                    const teilbegriffe = begriffLower.split(/\s+/).filter(x => x);
-
-                    if (teilbegriffe.length === 0) {
-                        continue;
-                    }
-
-                    // Prüfe, ob alle (1..n) Teilbegriffe innerhalb distance liegen
+                    const teilbegriffe = begriff.toLowerCase().trim().split(/\s+/).filter(x => x);
+                    if (teilbegriffe.length === 0) continue;
+    
                     if (allWordsWithinDistance(zeileLower, teilbegriffe, 30)) {
-                        // Ggf. "verbotene" Wörter prüfen?
-                        if (cfg.verboten && Array.isArray(cfg.verboten)) {
-                            // Falls in dem Zeilen-Text ein "verbotenes" Vorkommt => ignorieren
-                            let ignorieren = false;
-                            for (let v of cfg.verboten) {
-                                if (zeileLower.includes(v.toLowerCase())) {
-                                    ignorieren = true;
-                                    break;
-                                }
-                            }
-                            if (ignorieren) {
-                                continue; // dieses Treffer ignorieren
-                            }
-                        }
-
-                        // Gefunden
+                       // Verbotene Wörter zwischen den gefundenen Keywords prüfen
+                       if (cfg.verboten && cfg.verboten.length > 0) {
+                           const forbiddenPattern = new RegExp(cfg.verboten.join('|'), 'i');
+                           const zwischenText = getTextBetweenWords(zeileLower, teilbegriffe);
+                           if (forbiddenPattern.test(zwischenText)) {
+                               console.log(`Verbotene Wörter zwischen Keywords gefunden für: ${cfg.anzeige}`);
+                               continue;  // Falls verbotenes Wort gefunden, nicht als Treffer werten
+                           }
+                       }
+    
                         gefundene.push({ anzeige: cfg.anzeige, farbe: (cfg.farbe || '#66ff66').toLowerCase() });
                         gefunden = true;
                         break;
