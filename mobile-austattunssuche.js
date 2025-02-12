@@ -3,7 +3,10 @@
 // @namespace    http://tampermonkey.net/
 // @version      1.1.4
 // @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de, mit Konfig-Popup & Drag&Drop für Tech-Daten
+// @match        http://suchen.mobile.de/fahrzeuge/details.html*
 // @match        https://suchen.mobile.de/fahrzeuge/details.html*
+// @match        http://suchen.mobile.de/auto-inserat/*
+// @match        https://suchen.mobile.de/auto-inserat/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // ==/UserScript==
