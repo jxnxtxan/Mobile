@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Mobile.de Ausstattungssuche mit modernem Popup & Import/Export
+// @name         Mobile.de Ausstattungssuche mit modernem Popup & Import/Export (Teilwort-Abgleich)
 // @namespace    http://tampermonkey.net/
-// @version      1.1.4
-// @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de, mit Konfig-Popup & Drag&Drop für Tech-Daten
+// @version      1.1.6
+// @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de, mit Konfig-Popup & Drag&Drop für Tech-Daten. Entfernt Doppelungen per Teilwort-Vergleich.
 // @match        http://suchen.mobile.de/fahrzeuge/details.html*
 // @match        https://suchen.mobile.de/fahrzeuge/details.html*
 // @match        http://suchen.mobile.de/auto-inserat/*
@@ -113,6 +113,8 @@
         { begriff: 'Farbe', aktiv: true },
     ];
 
+    const wordDistance = 140;
+
     // ***********************************************************************
     // *** 3) Aktuelle Konfigurationen laden *********************************
     // ***********************************************************************
@@ -185,9 +187,8 @@
     // *** NEU: Hilfsfunktion, um x Wörter (1..4) mit max. 30 Zeichen Distanz
     // *** in beliebiger Reihenfolge in einer Zeile zu erkennen.
     // ***********************************************************************
-    function allWordsWithinDistance(line, words, distance = 30) {
+    function allWordsWithinDistance(line, words, distance = wordDistance) {
         // Finde alle Vorkommen jedes Wortes:
-        // positions[i] = Liste der Fundstellen für words[i].
         let positions = [];
         for (let w of words) {
             const posList = [];
@@ -198,21 +199,18 @@
                 posList.push(idx);
                 startIndex = idx + 1;
             }
-            // Falls ein Wort gar nicht in der Zeile vorkommt:
             if (posList.length === 0) {
                 return false;
             }
             positions.push(posList);
         }
 
-        // Bei nur 1 Wort reicht es, dass wir es gefunden haben:
+        // Nur 1 Wort?
         if (words.length === 1) {
-            return positions[0].length > 0; // schon oben geprüft, also true
+            return positions[0].length > 0;
         }
 
-        // Für 2+ Wörter müssen wir schauen, ob es eine Kombination der Fundstellen gibt,
-        // bei der die minimale und maximale Position innerhalb "distance" liegen.
-
+        // Cartesian product, um alle Positionskombinationen zu prüfen
         function cartesian(arr) {
             return arr.reduce((acc, val) => {
                 let res = [];
@@ -226,8 +224,6 @@
         }
 
         const combos = cartesian(positions);
-
-        // Prüfe jede Kombination
         for (let combo of combos) {
             const minPos = Math.min(...combo);
             const maxPos = Math.max(...combo);
@@ -241,15 +237,13 @@
     function getTextBetweenWords(text, keywords) {
         // Positionen der Keywords im Text finden
         const positions = keywords.map(kw => text.indexOf(kw));
-        
+
         // Prüfen, ob alle Keywords gefunden wurden
-        if (positions.includes(-1)) return ''; // Falls ein Keyword nicht gefunden wurde, abbrechen
-    
-        // Den kleinsten und größten Index ermitteln (Anfang & Ende)
+        if (positions.includes(-1)) return '';
+
+        // Den kleinsten und größten Index ermitteln
         const start = Math.min(...positions);
         const end = Math.max(...positions) + keywords[keywords.length - 1].length;
-    
-        // Text zwischen den Keywords extrahieren
         return text.substring(start, end);
     }
 
@@ -259,30 +253,31 @@
     function sucheBegriffe() {
         const gefundene = [];
         const textZeilen = getGesamtText();
-    
+
         suchKonfigurationen.forEach(cfg => {
             if (!cfg.aktiv) return;
             let gefunden = false;
-    
+
             for (let zeile of textZeilen) {
                 const zeileLower = zeile;
-    
                 for (let begriff of (cfg.begriffe || [])) {
                     const teilbegriffe = begriff.toLowerCase().trim().split(/\s+/).filter(x => x);
                     if (teilbegriffe.length === 0) continue;
-    
-                    if (allWordsWithinDistance(zeileLower, teilbegriffe, 30)) {
-                       // Verbotene Wörter zwischen den gefundenen Keywords prüfen
-                       if (cfg.verboten && cfg.verboten.length > 0) {
-                           const forbiddenPattern = new RegExp(cfg.verboten.join('|'), 'i');
-                           const zwischenText = getTextBetweenWords(zeileLower, teilbegriffe);
-                           if (forbiddenPattern.test(zwischenText)) {
-                               console.log(`Verbotene Wörter zwischen Keywords gefunden für: ${cfg.anzeige}`);
-                               continue;  // Falls verbotenes Wort gefunden, nicht als Treffer werten
-                           }
-                       }
-    
-                        gefundene.push({ anzeige: cfg.anzeige, farbe: (cfg.farbe || '#66ff66').toLowerCase() });
+
+                    if (allWordsWithinDistance(zeileLower, teilbegriffe, wordDistance)) {
+                        // Verbotene Wörter checken
+                        if (cfg.verboten && cfg.verboten.length > 0) {
+                            const forbiddenPattern = new RegExp(cfg.verboten.join('|'), 'i');
+                            const zwischenText = getTextBetweenWords(zeileLower, teilbegriffe);
+                            if (forbiddenPattern.test(zwischenText)) {
+                                console.log(`Verbotene Wörter zwischen Keywords gefunden für: ${cfg.anzeige}`);
+                                continue;
+                            }
+                        }
+                        gefundene.push({
+                            anzeige: cfg.anzeige,
+                            farbe: (cfg.farbe || '#66ff66').toLowerCase()
+                        });
                         gefunden = true;
                         break;
                     }
@@ -291,12 +286,86 @@
             }
         });
 
-        // Duplikate filtern, sortieren
+        // ---------------------------------------------------------------
+        // *** AB HIER: Dopplungs-Check (Variante 2: Teilwort-Abgleich) ***
+        // ---------------------------------------------------------------
+
+        // A) Tokenisierung
+        function tokenizeAndNormalize(str) {
+            return str
+                .toLowerCase()
+                // Punkte, Kommas, Bindestriche usw. durch Leerzeichen ersetzen
+                .replace(/[.,\-]+/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .split(' ')
+                .filter(token => token.length > 0);
+        }
+
+        // B) Prüfen, ob zwei einzelne Tokens "passen" (exakt oder startsWith)
+        function tokensMatch(tokenA, tokenB) {
+            const a = tokenA.toLowerCase();
+            const b = tokenB.toLowerCase();
+
+            if (a === b) {
+                return true;
+            }
+            // Startet das längere Wort mit dem kürzeren?
+            if (a.length < b.length) {
+                return b.startsWith(a);
+            } else {
+                return a.startsWith(b);
+            }
+        }
+
+        // C) Prüfen, ob ALLE Wörter von shortStr in longStr vorkommen
+        //    (per Teilwort-Abgleich)
+        function allWordsContained(shortStr, longStr) {
+            const shortTokens = tokenizeAndNormalize(shortStr);
+            const longTokens = tokenizeAndNormalize(longStr);
+            const longSet = new Set(longTokens);
+
+            // Für jedes Wort im kurzen Satz:
+            return shortTokens.every(shortTok => {
+                // Wir gucken, ob es im langen Satz mindestens ein Token gibt, 
+                // das via tokensMatch passt
+                return [...longSet].some(longTok => tokensMatch(shortTok, longTok));
+            });
+        }
+
+        // D) Duplikate entfernen
         const uniqueMap = new Map();
         gefundene.forEach(obj => uniqueMap.set(obj.anzeige, obj));
-        const uniqueGefundene = [...uniqueMap.values()];
+        let uniqueGefundene = [...uniqueMap.values()];
+
+        // E) Sortieren (optional)
         uniqueGefundene.sort((a, b) => a.anzeige.localeCompare(b.anzeige));
-        console.log("Gefundene Stichwörter:", uniqueGefundene.map(item => item.anzeige));
+
+        // F) Wortweiser Dopplungsfilter (teilwortbasiert)
+        const endgueltigeListe = [];
+        for (let i = 0; i < uniqueGefundene.length; i++) {
+            const eintragI = uniqueGefundene[i];
+            const textI = eintragI.anzeige;
+
+            let sollEntfallen = false;
+            for (let j = 0; j < uniqueGefundene.length; j++) {
+                if (i === j) continue;
+                const textJ = uniqueGefundene[j].anzeige;
+                // Wenn alle (Teil-)Wörter von textI in textJ vorkommen + textJ ist länger => textI fällt weg
+                if (allWordsContained(textI, textJ) && textJ.length > textI.length) {
+                    sollEntfallen = true;
+                    break;
+                }
+            }
+
+            if (!sollEntfallen) {
+                endgueltigeListe.push(eintragI);
+            }
+        }
+
+        uniqueGefundene = endgueltigeListe;
+        console.log("Gefundene (nach teilwortbasiertem Check):", uniqueGefundene.map(item => item.anzeige));
+
         return uniqueGefundene;
     }
 
@@ -474,14 +543,12 @@
         // ESC schließen - Event-Listener
         function escListener(e) {
             if (e.key === 'Escape') {
-                // entspricht "Abbrechen"
                 removeOverlay();
             }
         }
         document.addEventListener('keydown', escListener);
-    
+
         function removeOverlay() {
-            // Overlay und ESC-Listener entfernen => "Abbrechen"
             document.removeEventListener('keydown', escListener);
             overlay.remove();
         }
@@ -528,7 +595,7 @@
         popup.appendChild(ausstattungContainer);
 
         function renderAusstattung() {
-            // Nur zur Übersicht: Standardsortierung nach Anzeigetext (kann man weglassen, falls du Originalreihenfolge willst)
+            // Sortierung nach Anzeigetext
             aktuelleAusstattungsKonfig.sort((a, b) => {
                 const aText = (a.anzeige || '').trim();
                 const bText = (b.anzeige || '').trim();
@@ -681,7 +748,6 @@
         function renderTechData() {
             techContainer.innerHTML = '';
 
-            // Variable für das aktuell gezogene Element
             let draggedTechItemIndex = null;
 
             aktuelleTechKonfig.forEach((item, index) => {
@@ -692,15 +758,13 @@
                 divItem.style.marginBottom = '8px';
                 divItem.style.backgroundColor = '#3b3c42';
 
-                // --- DRAG & DROP Einstellungen ---
+                // DRAG & DROP
                 divItem.draggable = true;
-                // Bei DragStart merken wir uns, welches Item gezogen wird
                 divItem.addEventListener('dragstart', e => {
                     draggedTechItemIndex = index;
-                    e.dataTransfer.setData('text/plain', ''); // manche Browser brauchen das
+                    e.dataTransfer.setData('text/plain', '');
                     e.dataTransfer.effectAllowed = 'move';
                 });
-                // Damit "drop" funktioniert, müssen wir auf dem Ziel "dragover" verhindern
                 divItem.addEventListener('dragover', e => {
                     e.preventDefault();
                 });
@@ -708,12 +772,8 @@
                     e.preventDefault();
                     const targetIndex = index;
                     if (draggedTechItemIndex !== null && draggedTechItemIndex !== targetIndex) {
-                        // Element aus alter Position entfernen
                         const itemToMove = aktuelleTechKonfig[draggedTechItemIndex];
                         aktuelleTechKonfig.splice(draggedTechItemIndex, 1);
-
-                        // Falls wir nach unten gezogen haben und das Element dabei 
-                        // eine Position weiter vorne entfernt wurde, muss targetIndex -1
                         if (draggedTechItemIndex < targetIndex) {
                             aktuelleTechKonfig.splice(targetIndex - 1, 0, itemToMove);
                         } else {
@@ -822,7 +882,6 @@
         exportArea.readOnly = true;
         importExportContainer.appendChild(exportArea);
 
-        // Button: Export erzeugen
         const btnGenerateExport = document.createElement('button');
         btnGenerateExport.textContent = 'Export aktualisieren';
         btnGenerateExport.style.cursor = 'pointer';
@@ -834,7 +893,6 @@
         btnGenerateExport.style.marginTop = '4px';
         btnGenerateExport.style.marginRight = '10px';
         btnGenerateExport.addEventListener('click', () => {
-            // Objekt zusammenbauen
             const configObj = {
                 suchKonfigurationen: aktuelleAusstattungsKonfig,
                 techDataKonfigurationen: aktuelleTechKonfig
@@ -843,7 +901,6 @@
         });
         importExportContainer.appendChild(btnGenerateExport);
 
-        // Button: Copy to Clipboard
         const btnCopyExport = document.createElement('button');
         btnCopyExport.textContent = 'In Zwischenablage kopieren';
         btnCopyExport.style.cursor = 'pointer';
@@ -893,7 +950,6 @@
                 if (obj.techDataKonfigurationen && Array.isArray(obj.techDataKonfigurationen)) {
                     aktuelleTechKonfig = obj.techDataKonfigurationen;
                 }
-                // Neu rendern
                 renderAusstattung();
                 renderTechData();
                 alert('Import erfolgreich. Bitte ggf. noch "Speichern" klicken, um endgültig zu übernehmen.');
@@ -932,7 +988,6 @@
         saveBtn.style.backgroundColor = '#2196F3';
         saveBtn.style.color = '#fff';
         saveBtn.addEventListener('click', () => {
-            // Speichern in GM-Storage
             speichereConfig('mobilede_config', aktuelleAusstattungsKonfig);
             speichereConfig('mobilede_techconfig', aktuelleTechKonfig);
 
@@ -947,10 +1002,9 @@
         buttonBar.appendChild(saveBtn);
         popup.appendChild(buttonBar);
 
-        // Alles ins Overlay
         overlay.appendChild(popup);
 
-        // "Fade-in"
+        // Fade-in
         requestAnimationFrame(() => {
             overlay.style.opacity = '1';
             popup.style.opacity = '1';
