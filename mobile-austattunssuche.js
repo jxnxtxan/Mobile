@@ -113,7 +113,6 @@
         { begriff: 'Farbe', aktiv: true },
     ];
 
-    const wordDistance = 140;
 
     // ***********************************************************************
     // *** 3) Aktuelle Konfigurationen laden *********************************
@@ -126,6 +125,16 @@
     let techDataKonfigurationen = ladeConfig('mobilede_techconfig');
     if (!techDataKonfigurationen) {
         techDataKonfigurationen = techDataKonfigurationenDefault;
+    }
+
+    function getMaxDistanceByWordCount(count) {
+        switch (count) {
+            case 2: return 30;
+            case 3: return 70;
+            case 4: return 100;
+            case 5: return 150;
+            default: return 140; // Fallback bei 1 Wort oder > 5 Wörtern
+        }
     }
 
     // ***********************************************************************
@@ -187,7 +196,8 @@
     // *** NEU: Hilfsfunktion, um x Wörter (1..4) mit max. 30 Zeichen Distanz
     // *** in beliebiger Reihenfolge in einer Zeile zu erkennen.
     // ***********************************************************************
-    function allWordsWithinDistance(line, words, distance = wordDistance) {
+    function allWordsWithinDistance(line, words) {
+    const distance = getMaxDistanceByWordCount(words.length);
         // Finde alle Vorkommen jedes Wortes:
         let positions = [];
         for (let w of words) {
@@ -264,7 +274,7 @@
                     const teilbegriffe = begriff.toLowerCase().trim().split(/\s+/).filter(x => x);
                     if (teilbegriffe.length === 0) continue;
 
-                    if (allWordsWithinDistance(zeileLower, teilbegriffe, wordDistance)) {
+                    if (allWordsWithinDistance(zeileLower, teilbegriffe)) {
                         // Verbotene Wörter checken
                         if (cfg.verboten && cfg.verboten.length > 0) {
                             const forbiddenPattern = new RegExp(cfg.verboten.join('|'), 'i');
