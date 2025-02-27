@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Mobile.de Ausstattungssuche mit modernem Popup & Import/Export (Teilwort-Abgleich)
+// @name         Mobile.de Ausstattungssuche mit modernem Popup & Import/Export (Generalisiertes Merging mit Merge-Konfiguration)
 // @namespace    http://tampermonkey.net/
-// @version      1.1.6
-// @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de, mit Konfig-Popup & Drag&Drop für Tech-Daten. Entfernt Doppelungen per Teilwort-Vergleich.
+// @version      1.2.2
+// @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de, entfernt Duplikate per Teilwort-Abgleich und führt konfigurierbare Ausstattungsgruppen zusammen. Die Merge-Gruppen können im Popup konfiguriert werden – neue Gruppen werden beim Hinzufügen unten angezeigt und erst beim Speichern alphabetisch sortiert. Außerdem wird die finale Ergebnisliste alphabetisch sortiert angezeigt.
 // @match        http://suchen.mobile.de/fahrzeuge/details.html*
 // @match        https://suchen.mobile.de/fahrzeuge/details.html*
 // @match        http://suchen.mobile.de/auto-inserat/*
@@ -15,7 +15,7 @@
     'use strict';
 
     // ***********************************************************************
-    // *** 1) Hilfsfunktionen zum Speichern/Laden (GM_getValue / GM_setValue)
+    // 1) Hilfsfunktionen zum Speichern/Laden (GM_getValue / GM_setValue)
     // ***********************************************************************
     function ladeConfig(key) {
         try {
@@ -37,7 +37,7 @@
     }
 
     // ***********************************************************************
-    // *** 2) Standard-Konfig (Fallback), falls nichts in GM_getValue ********
+    // 2) Standard-Konfigurationen (Fallback)
     // ***********************************************************************
     let suchKonfigurationenDefault = [
         { begriffe: ['4wd', 'allrad'], anzeige: 'Allrad', farbe: 'orange', aktiv: true },
@@ -113,19 +113,20 @@
         { begriff: 'Farbe', aktiv: true },
     ];
 
+    // Default-Merge-Gruppen-Konfiguration
+    let mergeGruppenConfigDefault = [
+        {
+            basis: "außenspiegel",
+            order: ["elektr. verstellbar", "klappbar", "auto. abblend."]
+        }
+    ];
 
     // ***********************************************************************
-    // *** 3) Aktuelle Konfigurationen laden *********************************
+    // 3) Aktuelle Konfigurationen laden
     // ***********************************************************************
-    let suchKonfigurationen = ladeConfig('mobilede_config');
-    if (!suchKonfigurationen) {
-        suchKonfigurationen = suchKonfigurationenDefault;
-    }
-
-    let techDataKonfigurationen = ladeConfig('mobilede_techconfig');
-    if (!techDataKonfigurationen) {
-        techDataKonfigurationen = techDataKonfigurationenDefault;
-    }
+    let suchKonfigurationen = ladeConfig('mobilede_config') || suchKonfigurationenDefault;
+    let techDataKonfigurationen = ladeConfig('mobilede_techconfig') || techDataKonfigurationenDefault;
+    let mergeGruppenConfig = ladeConfig('mobilede_mergeGruppen') || mergeGruppenConfigDefault;
 
     function getMaxDistanceByWordCount(count) {
         switch (count) {
@@ -133,28 +134,23 @@
             case 3: return 70;
             case 4: return 100;
             case 5: return 150;
-            default: return 140; // Fallback bei 1 Wort oder > 5 Wörtern
+            default: return 140;
         }
     }
 
     // ***********************************************************************
-    // *** 4) DOM-Auswahl & Textaufbereitung *********************************
+    // 4) DOM-Auswahl & Textaufbereitung
     // ***********************************************************************
     const ausstattungsListe = document.querySelectorAll("ul[data-testid='vip-features-list'] li");
     const beschreibungsBereich = document.querySelector("div[data-testid='vip-vehicle-description-text']");
     const zusatzBereich = document.querySelector("div.GOIOV.fqe3L.EevEz");
     const techDataBereich = document.querySelector("article[data-testid='vip-technical-data-box'] dl.XCaEv");
 
-    // --- Hilfsfunktion, um typografische Striche & Co. zu normalisieren
     function cleanText(text) {
         return text
-            // Typische Striche (Halbgeviert, Geviert, ASCII-Bindestrich) in Leerzeichen umwandeln
             .replace(/[–—\-]+/g, ' ')
-            // Zeilenumbrüche, Tabs -> Leerzeichen
             .replace(/[\n\r\t]+/g, ' ')
-            // Mehrfache Leerzeichen reduzieren
             .replace(/\s{2,}/g, ' ')
-            // CamelCase ggf. auftrennen
             .replace(/([a-z])([A-Z])/g, '$1 $2')
             .trim()
             .toLowerCase();
@@ -162,7 +158,6 @@
 
     function getGesamtText() {
         let textParts = [];
-
         ausstattungsListe.forEach(li => {
             let txt = li.textContent.trim();
             if (txt) {
@@ -170,7 +165,6 @@
                 textParts.push(txt);
             }
         });
-
         if (beschreibungsBereich) {
             let txt = beschreibungsBereich.textContent.replace(/,/g, ' ').trim();
             if (txt) {
@@ -178,7 +172,6 @@
                 textParts.push(txt);
             }
         }
-
         if (zusatzBereich) {
             let txt = zusatzBereich.textContent.trim();
             if (txt) {
@@ -186,96 +179,25 @@
                 textParts.push(txt);
             }
         }
-
-        // Debug-Ausgabe
         console.log("Bereinigter Gesamter Text:", textParts.join(' | '));
         return textParts;
     }
 
     // ***********************************************************************
-    // *** NEU: Hilfsfunktion, um x Wörter (1..4) mit max. 30 Zeichen Distanz
-    // *** in beliebiger Reihenfolge in einer Zeile zu erkennen.
-    // ***********************************************************************
-    function allWordsWithinDistance(line, words) {
-    const distance = getMaxDistanceByWordCount(words.length);
-        // Finde alle Vorkommen jedes Wortes:
-        let positions = [];
-        for (let w of words) {
-            const posList = [];
-            let startIndex = 0;
-            while (true) {
-                let idx = line.indexOf(w, startIndex);
-                if (idx === -1) break;
-                posList.push(idx);
-                startIndex = idx + 1;
-            }
-            if (posList.length === 0) {
-                return false;
-            }
-            positions.push(posList);
-        }
-
-        // Nur 1 Wort?
-        if (words.length === 1) {
-            return positions[0].length > 0;
-        }
-
-        // Cartesian product, um alle Positionskombinationen zu prüfen
-        function cartesian(arr) {
-            return arr.reduce((acc, val) => {
-                let res = [];
-                acc.forEach(a => {
-                    val.forEach(b => {
-                        res.push(a.concat(b));
-                    });
-                });
-                return res;
-            }, [[]]);
-        }
-
-        const combos = cartesian(positions);
-        for (let combo of combos) {
-            const minPos = Math.min(...combo);
-            const maxPos = Math.max(...combo);
-            if (maxPos - minPos <= distance) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    function getTextBetweenWords(text, keywords) {
-        // Positionen der Keywords im Text finden
-        const positions = keywords.map(kw => text.indexOf(kw));
-
-        // Prüfen, ob alle Keywords gefunden wurden
-        if (positions.includes(-1)) return '';
-
-        // Den kleinsten und größten Index ermitteln
-        const start = Math.min(...positions);
-        const end = Math.max(...positions) + keywords[keywords.length - 1].length;
-        return text.substring(start, end);
-    }
-
-    // ***********************************************************************
-    // *** 5) Suche nach Begriffen *******************************************
+    // 5) Suche nach Begriffen
     // ***********************************************************************
     function sucheBegriffe() {
         const gefundene = [];
         const textZeilen = getGesamtText();
-
         suchKonfigurationen.forEach(cfg => {
             if (!cfg.aktiv) return;
             let gefunden = false;
-
             for (let zeile of textZeilen) {
                 const zeileLower = zeile;
                 for (let begriff of (cfg.begriffe || [])) {
                     const teilbegriffe = begriff.toLowerCase().trim().split(/\s+/).filter(x => x);
                     if (teilbegriffe.length === 0) continue;
-
                     if (allWordsWithinDistance(zeileLower, teilbegriffe)) {
-                        // Verbotene Wörter checken
                         if (cfg.verboten && cfg.verboten.length > 0) {
                             const forbiddenPattern = new RegExp(cfg.verboten.join('|'), 'i');
                             const zwischenText = getTextBetweenWords(zeileLower, teilbegriffe);
@@ -296,97 +218,137 @@
             }
         });
 
-        // ---------------------------------------------------------------
-        // *** AB HIER: Dopplungs-Check (Variante 2: Teilwort-Abgleich) ***
-        // ---------------------------------------------------------------
-
-        // A) Tokenisierung
+        // Hilfsfunktionen
         function tokenizeAndNormalize(str) {
             return str
                 .toLowerCase()
-                // Punkte, Kommas, Bindestriche usw. durch Leerzeichen ersetzen
                 .replace(/[.,\-]+/g, ' ')
                 .replace(/\s+/g, ' ')
                 .trim()
                 .split(' ')
                 .filter(token => token.length > 0);
         }
-
-        // B) Prüfen, ob zwei einzelne Tokens "passen" (exakt oder startsWith)
         function tokensMatch(tokenA, tokenB) {
             const a = tokenA.toLowerCase();
             const b = tokenB.toLowerCase();
-
-            if (a === b) {
-                return true;
-            }
-            // Startet das längere Wort mit dem kürzeren?
-            if (a.length < b.length) {
-                return b.startsWith(a);
-            } else {
-                return a.startsWith(b);
-            }
+            if (a === b) return true;
+            return a.length < b.length ? b.startsWith(a) : a.startsWith(b);
         }
-
-        // C) Prüfen, ob ALLE Wörter von shortStr in longStr vorkommen
-        //    (per Teilwort-Abgleich)
         function allWordsContained(shortStr, longStr) {
             const shortTokens = tokenizeAndNormalize(shortStr);
             const longTokens = tokenizeAndNormalize(longStr);
             const longSet = new Set(longTokens);
-
-            // Für jedes Wort im kurzen Satz:
             return shortTokens.every(shortTok => {
-                // Wir gucken, ob es im langen Satz mindestens ein Token gibt, 
-                // das via tokensMatch passt
                 return [...longSet].some(longTok => tokensMatch(shortTok, longTok));
             });
         }
 
-        // D) Duplikate entfernen
+        // Duplikate entfernen
         const uniqueMap = new Map();
         gefundene.forEach(obj => uniqueMap.set(obj.anzeige, obj));
         let uniqueGefundene = [...uniqueMap.values()];
-
-        // E) Sortieren (optional)
         uniqueGefundene.sort((a, b) => a.anzeige.localeCompare(b.anzeige));
-
-        // F) Wortweiser Dopplungsfilter (teilwortbasiert)
         const endgueltigeListe = [];
         for (let i = 0; i < uniqueGefundene.length; i++) {
-            const eintragI = uniqueGefundene[i];
-            const textI = eintragI.anzeige;
-
+            const textI = uniqueGefundene[i].anzeige;
             let sollEntfallen = false;
             for (let j = 0; j < uniqueGefundene.length; j++) {
                 if (i === j) continue;
-                const textJ = uniqueGefundene[j].anzeige;
-                // Wenn alle (Teil-)Wörter von textI in textJ vorkommen + textJ ist länger => textI fällt weg
-                if (allWordsContained(textI, textJ) && textJ.length > textI.length) {
+                if (allWordsContained(textI, uniqueGefundene[j].anzeige) && uniqueGefundene[j].anzeige.length > textI.length) {
                     sollEntfallen = true;
                     break;
                 }
             }
+            if (!sollEntfallen) endgueltigeListe.push(uniqueGefundene[i]);
+        }
+        uniqueGefundene = endgueltigeListe;
 
-            if (!sollEntfallen) {
-                endgueltigeListe.push(eintragI);
-            }
+        // GENERALISIERTES MERGING anhand konfigurierbarer Merge-Gruppen
+        function generalizedMergeEntries(entries, mergeGruppen) {
+            let result = [...entries];
+            mergeGruppen.forEach(group => {
+                const basis = group.basis.toLowerCase();
+                const order = group.order.map(item => item.toLowerCase());
+                let groupEntries = result.filter(e => e.anzeige.toLowerCase().includes(basis));
+                if (groupEntries.length > 1) {
+                    result = result.filter(e => !e.anzeige.toLowerCase().includes(basis));
+                    let modifiers = groupEntries.map(e => {
+                        return e.anzeige.toLowerCase().replace(basis, "").trim();
+                    }).filter(mod => mod.length > 0);
+                    modifiers = Array.from(new Set(modifiers));
+                    modifiers.sort((a, b) => {
+                        let ia = order.findIndex(key => a.includes(key.replace(/\./g, '').trim()));
+                        let ib = order.findIndex(key => b.includes(key.replace(/\./g, '').trim()));
+                        if (ia === -1) ia = 999;
+                        if (ib === -1) ib = 999;
+                        return ia - ib;
+                    });
+                    let mergedText = group.basis + (modifiers.length ? " " + modifiers.join(" ") : "");
+                    result.push({
+                        anzeige: mergedText,
+                        farbe: groupEntries[0].farbe,
+                        aktiv: groupEntries[0].aktiv
+                    });
+                }
+            });
+            return result;
         }
 
-        uniqueGefundene = endgueltigeListe;
-        console.log("Gefundene (nach teilwortbasiertem Check):", uniqueGefundene.map(item => item.anzeige));
+        uniqueGefundene = generalizedMergeEntries(uniqueGefundene, mergeGruppenConfig);
 
+        // WICHTIG: Endgültige alphabetische Sortierung vor Rückgabe
+        uniqueGefundene.sort((a, b) => a.anzeige.localeCompare(b.anzeige));
+        console.log("Gefundene (nach generalisiertem Merging und Sortierung):", uniqueGefundene.map(item => item.anzeige));
         return uniqueGefundene;
     }
 
+    function allWordsWithinDistance(line, words) {
+        const distance = getMaxDistanceByWordCount(words.length);
+        let positions = [];
+        for (let w of words) {
+            const posList = [];
+            let startIndex = 0;
+            while (true) {
+                let idx = line.indexOf(w, startIndex);
+                if (idx === -1) break;
+                posList.push(idx);
+                startIndex = idx + 1;
+            }
+            if (posList.length === 0) return false;
+            positions.push(posList);
+        }
+        if (words.length === 1) return positions[0].length > 0;
+        function cartesian(arr) {
+            return arr.reduce((acc, val) => {
+                let res = [];
+                acc.forEach(a => {
+                    val.forEach(b => res.push(a.concat(b)));
+                });
+                return res;
+            }, [[]]);
+        }
+        const combos = cartesian(positions);
+        for (let combo of combos) {
+            if (Math.max(...combo) - Math.min(...combo) <= distance) return true;
+        }
+        return false;
+    }
+
+    function getTextBetweenWords(text, keywords) {
+        const positions = keywords.map(kw => text.indexOf(kw));
+        if (positions.includes(-1)) return '';
+        const start = Math.min(...positions);
+        const end = Math.max(...positions) + keywords[keywords.length - 1].length;
+        return text.substring(start, end);
+    }
+
     // ***********************************************************************
-    // *** 6) Suche nach Technischen Daten ***********************************
+    // 6) Suche nach Technischen Daten
     // ***********************************************************************
     function sucheTechnischeDaten() {
         if (!techDataBereich) return [];
         const daten = [];
         const dtElements = techDataBereich.querySelectorAll("dt");
-
         techDataKonfigurationen.forEach(cfg => {
             if (!cfg.aktiv) return;
             for (let dt of dtElements) {
@@ -406,11 +368,9 @@
     function technischeDatenHinzufuegen(parentElement) {
         const technischeDaten = sucheTechnischeDaten();
         if (technischeDaten.length === 0) return;
-
         const techArticle = document.createElement('article');
         techArticle.className = 'A3G6X lAeeF vTKPY HaBLt ku0Os';
         techArticle.style.marginBottom = "10px";
-
         const techContainer = document.createElement('div');
         techContainer.style.border = "1px solid #8a2be2";
         techContainer.style.padding = "10px";
@@ -422,17 +382,14 @@
         techContainer.style.fontSize = "14px";
         techContainer.style.lineHeight = "1.5";
         techContainer.style.display = "block";
-
         const title = document.createElement('div');
         title.textContent = "Technische Daten:";
         title.style.color = "white";
         title.style.marginBottom = "5px";
         techContainer.appendChild(title);
-
         const table = document.createElement('table');
         table.style.width = "100%";
         table.style.borderCollapse = "collapse";
-
         technischeDaten.forEach(d => {
             const tr = document.createElement('tr');
             const tdKey = document.createElement('td');
@@ -441,41 +398,30 @@
             tdKey.style.paddingRight = "20px";
             tdKey.style.whiteSpace = "nowrap";
             tdKey.style.verticalAlign = "top";
-
             const tdValue = document.createElement('td');
             tdValue.textContent = d.value;
             tdValue.style.color = "white";
             tdValue.style.width = "100%";
             tdValue.style.verticalAlign = "top";
-
             tr.appendChild(tdKey);
             tr.appendChild(tdValue);
             table.appendChild(tr);
         });
-
         techContainer.appendChild(table);
         techArticle.appendChild(techContainer);
-
         parentElement.parentNode.insertBefore(techArticle, parentElement);
     }
 
     // ***********************************************************************
-    // *** 7) Ergebnisse zusammenfassen **************************************
+    // 7) Ergebnisse zusammenfassen
     // ***********************************************************************
     function ergebnisHinzufuegen() {
         const gefundeneTexte = sucheBegriffe();
-
         const zielBereich = document.querySelector("article[data-testid='vip-key-features-box']");
         if (!zielBereich) return;
-
-        // Falls schon erstellt, nicht noch mal
-        if (document.querySelector("#ergebnisBereich")) {
-            return;
-        }
-
+        if (document.querySelector("#ergebnisBereich")) return;
         const article = document.createElement('article');
         article.className = 'A3G6X lAeeF vTKPY HaBLt ku0Os';
-
         const ergebnisBereich = document.createElement('div');
         ergebnisBereich.id = "ergebnisBereich";
         ergebnisBereich.style.border = "1px solid #8a2be2";
@@ -491,14 +437,12 @@
         ergebnisBereich.style.display = "flex";
         ergebnisBereich.style.flexWrap = "wrap";
         article.appendChild(ergebnisBereich);
-
         const title = document.createElement('div');
         title.style.color = "white";
         title.style.marginBottom = "5px";
         title.style.width = '100%';
         title.textContent = 'Gefundene Begriffe:';
         ergebnisBereich.appendChild(title);
-
         if (gefundeneTexte.length > 0) {
             gefundeneTexte.forEach(item => {
                 const textElement = document.createElement('div');
@@ -513,31 +457,26 @@
             keineTexte.style.color = "white";
             ergebnisBereich.appendChild(keineTexte);
         }
-
         zielBereich.parentNode.insertBefore(article, zielBereich.nextSibling);
         technischeDatenHinzufuegen(article);
     }
 
-    // MutationObserver, um Dynamik abzufangen
     const observer = new MutationObserver(() => {
         if (!document.querySelector("#ergebnisBereich")) {
             setTimeout(ergebnisHinzufuegen, 1000);
         }
     });
     observer.observe(document.body, { childList: true, subtree: true });
-
-    // Initialer Aufruf nach Seitenaufbau
     setTimeout(ergebnisHinzufuegen, 2000);
 
     // ***********************************************************************
-    // *** 8) Popup-Fenster mit Import/Export ********************************
+    // 8) Popup-Fenster mit Import/Export & Konfiguration
     // ***********************************************************************
     function oeffneKonfigPopup() {
-        // Kopien anlegen (damit wir erst bei "Speichern" wirklich übernehmen)
         let aktuelleAusstattungsKonfig = JSON.parse(JSON.stringify(suchKonfigurationen));
-        let aktuelleTechKonfig = JSON.parse(JSON.stringify(techDataKonfigurationen));
+        let aktuelleTechKonfigurationen = JSON.parse(JSON.stringify(techDataKonfigurationen));
+        let aktuelleMergeGruppen = JSON.parse(JSON.stringify(mergeGruppenConfig));
 
-        // Overlay
         const overlay = document.createElement('div');
         overlay.style.position = 'fixed';
         overlay.style.top = '0';
@@ -550,20 +489,15 @@
         overlay.style.transition = 'opacity 0.3s ease';
         document.body.appendChild(overlay);
 
-        // ESC schließen - Event-Listener
         function escListener(e) {
-            if (e.key === 'Escape') {
-                removeOverlay();
-            }
+            if (e.key === 'Escape') removeOverlay();
         }
         document.addEventListener('keydown', escListener);
-
         function removeOverlay() {
             document.removeEventListener('keydown', escListener);
             overlay.remove();
         }
 
-        // Popup
         const popup = document.createElement('div');
         popup.style.position = 'absolute';
         popup.style.top = '50%';
@@ -581,19 +515,16 @@
         popup.style.border = 'none';
         popup.style.padding = '20px';
         popup.style.fontFamily = 'Arial, sans-serif';
-        popup.style.opacity = '0'; // fade-in
+        popup.style.opacity = '0';
         popup.style.transition = 'opacity 0.3s ease';
 
-        // Titel
         const title = document.createElement('h2');
         title.textContent = 'Konfiguration';
         title.style.marginTop = '0';
         title.style.fontWeight = 'normal';
         popup.appendChild(title);
 
-        // -------------------------------
         // A) AUSSTATTUNG EDITIEREN
-        // -------------------------------
         const ausstattungTitle = document.createElement('h3');
         ausstattungTitle.textContent = 'Ausstattungs-Konfiguration';
         ausstattungTitle.style.borderBottom = '1px solid #444';
@@ -605,16 +536,7 @@
         popup.appendChild(ausstattungContainer);
 
         function renderAusstattung() {
-            // Sortierung nach Anzeigetext
-            aktuelleAusstattungsKonfig.sort((a, b) => {
-                const aText = (a.anzeige || '').trim();
-                const bText = (b.anzeige || '').trim();
-                if (!aText && !bText) return 0;
-                if (!aText) return 1;
-                if (!bText) return -1;
-                return aText.localeCompare(bText);
-            });
-
+            aktuelleAusstattungsKonfig.sort((a, b) => (a.anzeige || '').trim().localeCompare((b.anzeige || '').trim()));
             ausstattungContainer.innerHTML = '';
             aktuelleAusstattungsKonfig.forEach((item, index) => {
                 const divItem = document.createElement('div');
@@ -623,26 +545,18 @@
                 divItem.style.padding = '10px';
                 divItem.style.marginBottom = '8px';
                 divItem.style.backgroundColor = '#3b3c42';
-
                 const row1 = document.createElement('div');
                 row1.style.display = 'flex';
                 row1.style.flexWrap = 'wrap';
                 row1.style.alignItems = 'center';
-
-                // aktiv
                 const checkAktiv = document.createElement('input');
                 checkAktiv.style.marginRight = '5px';
                 checkAktiv.type = 'checkbox';
                 checkAktiv.checked = item.aktiv === true;
-                checkAktiv.addEventListener('change', () => {
-                    item.aktiv = checkAktiv.checked;
-                });
-
+                checkAktiv.addEventListener('change', () => { item.aktiv = checkAktiv.checked; });
                 const lblAktiv = document.createElement('label');
                 lblAktiv.textContent = ' aktiv';
                 lblAktiv.style.marginRight = '10px';
-
-                // anzeige
                 const inputAnzeige = document.createElement('input');
                 inputAnzeige.type = 'text';
                 inputAnzeige.value = item.anzeige;
@@ -650,22 +564,14 @@
                 inputAnzeige.style.flex = '1';
                 inputAnzeige.style.minWidth = '150px';
                 inputAnzeige.style.marginRight = '10px';
-                inputAnzeige.addEventListener('input', () => {
-                    item.anzeige = inputAnzeige.value;
-                });
-
-                // farbe
+                inputAnzeige.addEventListener('input', () => { item.anzeige = inputAnzeige.value; });
                 const inputFarbe = document.createElement('input');
                 inputFarbe.type = 'text';
                 inputFarbe.value = item.farbe || '';
                 inputFarbe.placeholder = '#66ff66';
                 inputFarbe.style.marginRight = '10px';
                 inputFarbe.style.width = '100px';
-                inputFarbe.addEventListener('input', () => {
-                    item.farbe = inputFarbe.value;
-                });
-
-                // löschen
+                inputFarbe.addEventListener('input', () => { item.farbe = inputFarbe.value; });
                 const btnLoeschen = document.createElement('button');
                 btnLoeschen.textContent = 'Löschen';
                 btnLoeschen.style.cursor = 'pointer';
@@ -675,32 +581,21 @@
                 btnLoeschen.style.borderRadius = '4px';
                 btnLoeschen.style.backgroundColor = '#a33';
                 btnLoeschen.style.color = '#fff';
-                btnLoeschen.addEventListener('click', () => {
-                    aktuelleAusstattungsKonfig.splice(index, 1);
-                    renderAusstattung();
-                });
-
+                btnLoeschen.addEventListener('click', () => { aktuelleAusstattungsKonfig.splice(index, 1); renderAusstattung(); });
                 row1.appendChild(checkAktiv);
                 row1.appendChild(lblAktiv);
                 row1.appendChild(inputAnzeige);
                 row1.appendChild(inputFarbe);
                 row1.appendChild(btnLoeschen);
-
-                // begriffe
                 const txtBegriffe = document.createElement('textarea');
                 txtBegriffe.value = (item.begriffe || []).join(', ');
                 txtBegriffe.style.width = '100%';
                 txtBegriffe.style.height = '40px';
                 txtBegriffe.style.marginTop = '6px';
-                txtBegriffe.placeholder = 'Suchbegriffe, Komma-getrennt (z.B. "elek sitz, elek verstell sitz heiz")';
+                txtBegriffe.placeholder = 'Suchbegriffe, Komma-getrennt';
                 txtBegriffe.addEventListener('input', () => {
-                    item.begriffe = txtBegriffe.value
-                        .split(',')
-                        .map(s => s.trim())
-                        .filter(s => s.length > 0);
+                    item.begriffe = txtBegriffe.value.split(',').map(s => s.trim()).filter(s => s.length > 0);
                 });
-
-                // Verboten-Feld
                 const txtVerboten = document.createElement('textarea');
                 txtVerboten.value = (item.verboten || []).join(', ');
                 txtVerboten.style.width = '100%';
@@ -708,12 +603,8 @@
                 txtVerboten.style.marginTop = '4px';
                 txtVerboten.placeholder = 'Verbotene Wörter, Komma-getrennt';
                 txtVerboten.addEventListener('input', () => {
-                    item.verboten = txtVerboten.value
-                        .split(',')
-                        .map(s => s.trim())
-                        .filter(s => s.length > 0);
+                    item.verboten = txtVerboten.value.split(',').map(s => s.trim()).filter(s => s.length > 0);
                 });
-
                 divItem.appendChild(row1);
                 divItem.appendChild(txtBegriffe);
                 divItem.appendChild(txtVerboten);
@@ -721,7 +612,6 @@
             });
         }
         renderAusstattung();
-
         const btnNeuAusstattung = document.createElement('button');
         btnNeuAusstattung.textContent = 'Neuen Ausstattungseintrag hinzufügen';
         btnNeuAusstattung.style.cursor = 'pointer';
@@ -732,84 +622,63 @@
         btnNeuAusstattung.style.color = '#fff';
         btnNeuAusstattung.style.marginTop = '8px';
         btnNeuAusstattung.addEventListener('click', () => {
-            aktuelleAusstattungsKonfig.push({
-                begriffe: [],
-                anzeige: '',
-                farbe: '#66ff66',
-                aktiv: true
-            });
+            aktuelleAusstattungsKonfig.push({ begriffe: [], anzeige: '', farbe: '#66ff66', aktiv: true });
             renderAusstattung();
         });
         popup.appendChild(btnNeuAusstattung);
 
-        // -------------------------------
         // B) TECHNISCHE DATEN EDITIEREN
-        // -------------------------------
         const techTitle = document.createElement('h3');
         techTitle.textContent = 'Technische Daten-Konfiguration';
         techTitle.style.borderBottom = '1px solid #444';
         techTitle.style.paddingBottom = '4px';
         techTitle.style.marginTop = '16px';
         popup.appendChild(techTitle);
-
         const techContainer = document.createElement('div');
         popup.appendChild(techContainer);
-
         function renderTechData() {
             techContainer.innerHTML = '';
-
             let draggedTechItemIndex = null;
-
-            aktuelleTechKonfig.forEach((item, index) => {
+            aktuelleTechKonfigurationen.forEach((item, index) => {
                 const divItem = document.createElement('div');
                 divItem.style.border = '1px solid #444';
                 divItem.style.borderRadius = '6px';
                 divItem.style.padding = '10px';
                 divItem.style.marginBottom = '8px';
                 divItem.style.backgroundColor = '#3b3c42';
-
-                // DRAG & DROP
                 divItem.draggable = true;
                 divItem.addEventListener('dragstart', e => {
                     draggedTechItemIndex = index;
                     e.dataTransfer.setData('text/plain', '');
                     e.dataTransfer.effectAllowed = 'move';
                 });
-                divItem.addEventListener('dragover', e => {
-                    e.preventDefault();
-                });
+                divItem.addEventListener('dragover', e => { e.preventDefault(); });
                 divItem.addEventListener('drop', e => {
                     e.preventDefault();
                     const targetIndex = index;
                     if (draggedTechItemIndex !== null && draggedTechItemIndex !== targetIndex) {
-                        const itemToMove = aktuelleTechKonfig[draggedTechItemIndex];
-                        aktuelleTechKonfig.splice(draggedTechItemIndex, 1);
+                        const itemToMove = aktuelleTechKonfigurationen[draggedTechItemIndex];
+                        aktuelleTechKonfigurationen.splice(draggedTechItemIndex, 1);
                         if (draggedTechItemIndex < targetIndex) {
-                            aktuelleTechKonfig.splice(targetIndex - 1, 0, itemToMove);
+                            aktuelleTechKonfigurationen.splice(targetIndex - 1, 0, itemToMove);
                         } else {
-                            aktuelleTechKonfig.splice(targetIndex, 0, itemToMove);
+                            aktuelleTechKonfigurationen.splice(targetIndex, 0, itemToMove);
                         }
                         renderTechData();
                     }
                 });
-
                 const row1 = document.createElement('div');
                 row1.style.display = 'flex';
                 row1.style.flexWrap = 'wrap';
                 row1.style.alignItems = 'center';
-
                 const checkAktiv = document.createElement('input');
                 checkAktiv.style.marginRight = '5px';
                 checkAktiv.type = 'checkbox';
                 checkAktiv.checked = item.aktiv === true;
-                checkAktiv.addEventListener('change', () => {
-                    item.aktiv = checkAktiv.checked;
-                });
-
+                checkAktiv.addEventListener('change', () => { item.aktiv = checkAktiv.checked; });
                 const lblAktiv = document.createElement('label');
                 lblAktiv.textContent = ' aktiv';
                 lblAktiv.style.marginRight = '10px';
-
                 const inputBegriff = document.createElement('input');
                 inputBegriff.type = 'text';
                 inputBegriff.value = item.begriff;
@@ -817,35 +686,25 @@
                 inputBegriff.style.flex = '1';
                 inputBegriff.style.minWidth = '200px';
                 inputBegriff.style.marginRight = '10px';
-                inputBegriff.addEventListener('input', () => {
-                    item.begriff = inputBegriff.value;
-                });
-
-                const btnLoeschen = document.createElement('button');
-                btnLoeschen.textContent = 'Löschen';
-                btnLoeschen.style.cursor = 'pointer';
-                btnLoeschen.style.padding = '4px 8px';
-                btnLoeschen.style.border = 'none';
-                btnLoeschen.style.borderRadius = '4px';
-                btnLoeschen.style.backgroundColor = '#a33';
-                btnLoeschen.style.color = '#fff';
-                btnLoeschen.addEventListener('click', () => {
-                    aktuelleTechKonfig.splice(index, 1);
-                    renderTechData();
-                });
-
+                inputBegriff.addEventListener('input', () => { item.begriff = inputBegriff.value; });
+                const btnLoeschenTech = document.createElement('button');
+                btnLoeschenTech.textContent = 'Löschen';
+                btnLoeschenTech.style.cursor = 'pointer';
+                btnLoeschenTech.style.padding = '4px 8px';
+                btnLoeschenTech.style.border = 'none';
+                btnLoeschenTech.style.borderRadius = '4px';
+                btnLoeschenTech.style.backgroundColor = '#a33';
+                btnLoeschenTech.style.color = '#fff';
+                btnLoeschenTech.addEventListener('click', () => { aktuelleTechKonfigurationen.splice(index, 1); renderTechData(); });
                 row1.appendChild(checkAktiv);
                 row1.appendChild(lblAktiv);
                 row1.appendChild(inputBegriff);
-                row1.appendChild(btnLoeschen);
-
+                row1.appendChild(btnLoeschenTech);
                 divItem.appendChild(row1);
                 techContainer.appendChild(divItem);
             });
         }
-
         renderTechData();
-
         const btnNeuTech = document.createElement('button');
         btnNeuTech.textContent = 'Neuen Tech-Parameter hinzufügen';
         btnNeuTech.style.cursor = 'pointer';
@@ -856,33 +715,93 @@
         btnNeuTech.style.color = '#fff';
         btnNeuTech.style.marginTop = '8px';
         btnNeuTech.addEventListener('click', () => {
-            aktuelleTechKonfig.push({
-                begriff: '',
-                aktiv: true
-            });
+            aktuelleTechKonfigurationen.push({ begriff: '', aktiv: true });
             renderTechData();
         });
         popup.appendChild(btnNeuTech);
 
-        // -------------------------------
-        // C) IMPORT / EXPORT
-        // -------------------------------
+        // C) MERGE-GRUPPEN KONFIGURATION
+        const mergeTitle = document.createElement('h3');
+        mergeTitle.textContent = 'Merge-Gruppen Konfiguration';
+        mergeTitle.style.borderBottom = '1px solid #444';
+        mergeTitle.style.paddingBottom = '4px';
+        mergeTitle.style.marginTop = '16px';
+        popup.appendChild(mergeTitle);
+        const mergeContainer = document.createElement('div');
+        popup.appendChild(mergeContainer);
+        function renderMergeConfig() {
+            mergeContainer.innerHTML = '';
+            // Hier nicht sortieren – neue Einträge bleiben unten
+            aktuelleMergeGruppen.forEach((group, index) => {
+                const divGroup = document.createElement('div');
+                divGroup.style.border = '1px solid #444';
+                divGroup.style.borderRadius = '6px';
+                divGroup.style.padding = '10px';
+                divGroup.style.marginBottom = '8px';
+                divGroup.style.backgroundColor = '#3b3c42';
+                const inputBasis = document.createElement('input');
+                inputBasis.type = 'text';
+                inputBasis.value = group.basis;
+                inputBasis.placeholder = 'Basis (z.B. außenspiegel)';
+                inputBasis.style.width = '40%';
+                inputBasis.style.marginRight = '10px';
+                inputBasis.addEventListener('input', () => { group.basis = inputBasis.value; });
+                const inputOrder = document.createElement('input');
+                inputOrder.type = 'text';
+                inputOrder.value = group.order.join(', ');
+                inputOrder.placeholder = 'Reihenfolge, Komma-getrennt (z.B. elektr. verstellbar, klappbar, auto. abblend.)';
+                inputOrder.style.width = '50%';
+                inputOrder.addEventListener('input', () => {
+                    group.order = inputOrder.value.split(',').map(s => s.trim()).filter(s => s.length > 0);
+                });
+                const btnDeleteGroup = document.createElement('button');
+                btnDeleteGroup.textContent = 'Löschen';
+                btnDeleteGroup.style.cursor = 'pointer';
+                btnDeleteGroup.style.padding = '4px 8px';
+                btnDeleteGroup.style.marginTop = '4px';
+                btnDeleteGroup.style.border = 'none';
+                btnDeleteGroup.style.borderRadius = '4px';
+                btnDeleteGroup.style.backgroundColor = '#a33';
+                btnDeleteGroup.style.color = '#fff';
+                btnDeleteGroup.addEventListener('click', () => {
+                    aktuelleMergeGruppen.splice(index, 1);
+                    renderMergeConfig();
+                });
+                divGroup.appendChild(inputBasis);
+                divGroup.appendChild(inputOrder);
+                divGroup.appendChild(btnDeleteGroup);
+                mergeContainer.appendChild(divGroup);
+            });
+        }
+        renderMergeConfig();
+        const btnNewMergeGroup = document.createElement('button');
+        btnNewMergeGroup.textContent = 'Neue Merge-Gruppe hinzufügen';
+        btnNewMergeGroup.style.cursor = 'pointer';
+        btnNewMergeGroup.style.padding = '6px 10px';
+        btnNewMergeGroup.style.border = 'none';
+        btnNewMergeGroup.style.borderRadius = '4px';
+        btnNewMergeGroup.style.backgroundColor = '#4caf50';
+        btnNewMergeGroup.style.color = '#fff';
+        btnNewMergeGroup.style.marginTop = '8px';
+        btnNewMergeGroup.addEventListener('click', () => {
+            aktuelleMergeGruppen.push({ basis: '', order: [] });
+            renderMergeConfig();
+        });
+        popup.appendChild(btnNewMergeGroup);
+
+        // D) IMPORT / EXPORT
         const importExportTitle = document.createElement('h3');
         importExportTitle.textContent = 'Import / Export';
         importExportTitle.style.borderBottom = '1px solid #444';
         importExportTitle.style.paddingBottom = '4px';
         importExportTitle.style.marginTop = '16px';
         popup.appendChild(importExportTitle);
-
         const importExportContainer = document.createElement('div');
         popup.appendChild(importExportContainer);
-
-        // --- Export (JSON) ---
         const exportLabel = document.createElement('div');
         exportLabel.textContent = 'Aktuelle Konfiguration (Export-JSON):';
         exportLabel.style.marginTop = '8px';
         importExportContainer.appendChild(exportLabel);
-
         const exportArea = document.createElement('textarea');
         exportArea.style.width = '100%';
         exportArea.style.height = '100px';
@@ -891,7 +810,6 @@
         exportArea.style.color = '#fff';
         exportArea.readOnly = true;
         importExportContainer.appendChild(exportArea);
-
         const btnGenerateExport = document.createElement('button');
         btnGenerateExport.textContent = 'Export aktualisieren';
         btnGenerateExport.style.cursor = 'pointer';
@@ -905,12 +823,12 @@
         btnGenerateExport.addEventListener('click', () => {
             const configObj = {
                 suchKonfigurationen: aktuelleAusstattungsKonfig,
-                techDataKonfigurationen: aktuelleTechKonfig
+                techDataKonfigurationen: aktuelleTechKonfigurationen,
+                mergeGruppenConfig: aktuelleMergeGruppen
             };
             exportArea.value = JSON.stringify(configObj, null, 2);
         });
         importExportContainer.appendChild(btnGenerateExport);
-
         const btnCopyExport = document.createElement('button');
         btnCopyExport.textContent = 'In Zwischenablage kopieren';
         btnCopyExport.style.cursor = 'pointer';
@@ -925,13 +843,10 @@
             document.execCommand('copy');
         });
         importExportContainer.appendChild(btnCopyExport);
-
-        // --- Import (JSON) ---
         const importLabel = document.createElement('div');
         importLabel.textContent = 'Konfiguration importieren (füge JSON hier ein):';
         importLabel.style.marginTop = '12px';
         importExportContainer.appendChild(importLabel);
-
         const importArea = document.createElement('textarea');
         importArea.style.width = '100%';
         importArea.style.height = '100px';
@@ -939,7 +854,6 @@
         importArea.style.backgroundColor = '#3b3c42';
         importArea.style.color = '#fff';
         importExportContainer.appendChild(importArea);
-
         const btnImport = document.createElement('button');
         btnImport.textContent = 'Import durchführen';
         btnImport.style.cursor = 'pointer';
@@ -958,24 +872,25 @@
                     aktuelleAusstattungsKonfig = obj.suchKonfigurationen;
                 }
                 if (obj.techDataKonfigurationen && Array.isArray(obj.techDataKonfigurationen)) {
-                    aktuelleTechKonfig = obj.techDataKonfigurationen;
+                    aktuelleTechKonfigurationen = obj.techDataKonfigurationen;
+                }
+                if (obj.mergeGruppenConfig && Array.isArray(obj.mergeGruppenConfig)) {
+                    aktuelleMergeGruppen = obj.mergeGruppenConfig;
                 }
                 renderAusstattung();
                 renderTechData();
-                alert('Import erfolgreich. Bitte ggf. noch "Speichern" klicken, um endgültig zu übernehmen.');
+                renderMergeConfig();
+                alert('Import erfolgreich. Bitte ggf. noch "Speichern" klicken.');
             } catch (e) {
                 alert('Fehler beim Import. Ungültiges JSON?\n' + e);
             }
         });
         importExportContainer.appendChild(btnImport);
 
-        // -------------------------------
-        // D) BUTTON-BAR (SPEICHERN / ABBRECHEN)
-        // -------------------------------
+        // E) BUTTON-BAR (SPEICHERN / ABBRECHEN)
         const buttonBar = document.createElement('div');
         buttonBar.style.textAlign = 'right';
         buttonBar.style.marginTop = '20px';
-
         const cancelBtn = document.createElement('button');
         cancelBtn.textContent = 'Abbrechen';
         cancelBtn.style.cursor = 'pointer';
@@ -985,10 +900,7 @@
         cancelBtn.style.backgroundColor = '#555';
         cancelBtn.style.color = '#fff';
         cancelBtn.style.marginRight = '10px';
-        cancelBtn.addEventListener('click', () => {
-            removeOverlay();
-        });
-
+        cancelBtn.addEventListener('click', () => { removeOverlay(); });
         const saveBtn = document.createElement('button');
         saveBtn.textContent = 'Speichern';
         saveBtn.style.cursor = 'pointer';
@@ -998,36 +910,29 @@
         saveBtn.style.backgroundColor = '#2196F3';
         saveBtn.style.color = '#fff';
         saveBtn.addEventListener('click', () => {
+            // Vor dem Speichern alphabetisch sortieren:
+            aktuelleMergeGruppen.sort((a, b) => a.basis.localeCompare(b.basis));
             speichereConfig('mobilede_config', aktuelleAusstattungsKonfig);
-            speichereConfig('mobilede_techconfig', aktuelleTechKonfig);
-
-            // Globale Variablen sofort aktualisieren
+            speichereConfig('mobilede_techconfig', aktuelleTechKonfigurationen);
+            speichereConfig('mobilede_mergeGruppen', aktuelleMergeGruppen);
             suchKonfigurationen = aktuelleAusstattungsKonfig;
-            techDataKonfigurationen = aktuelleTechKonfig;
-
+            techDataKonfigurationen = aktuelleTechKonfigurationen;
+            mergeGruppenConfig = aktuelleMergeGruppen;
             removeOverlay();
         });
-
         buttonBar.appendChild(cancelBtn);
         buttonBar.appendChild(saveBtn);
         popup.appendChild(buttonBar);
-
         overlay.appendChild(popup);
-
-        // Fade-in
-        requestAnimationFrame(() => {
-            overlay.style.opacity = '1';
-            popup.style.opacity = '1';
-        });
+        requestAnimationFrame(() => { overlay.style.opacity = '1'; popup.style.opacity = '1'; });
     }
 
     // ***********************************************************************
-    // *** 9) Konfig-Button einfügen *****************************************
+    // 9) Konfig-Button einfügen
     // ***********************************************************************
     function erstelleKonfigButton() {
         const targetDiv = document.querySelector('.Va7Gr');
         if (!targetDiv) return;
-
         const button = document.createElement('button');
         button.innerText = 'Konfiguration';
         button.style.cursor = 'pointer';
@@ -1038,11 +943,7 @@
         button.style.color = '#fff';
         button.style.fontFamily = 'Arial, sans-serif';
         button.style.boxShadow = '0px 2px 5px rgba(0,0,0,0.3)';
-
-        button.addEventListener('click', () => {
-            oeffneKonfigPopup();
-        });
-
+        button.addEventListener('click', () => { oeffneKonfigPopup(); });
         targetDiv.appendChild(button);
     }
 
