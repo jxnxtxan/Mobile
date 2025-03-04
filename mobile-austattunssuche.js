@@ -143,8 +143,9 @@
     // ***********************************************************************
     const ausstattungsListe = document.querySelectorAll("ul[data-testid='vip-features-list'] li");
     const beschreibungsBereich = document.querySelector("div[data-testid='vip-vehicle-description-text']");
-    const zusatzBereich = document.querySelector("div.GOIOV.fqe3L.EevEz");
-    const techDataBereich = document.querySelector("article[data-testid='vip-technical-data-box'] dl.XCaEv");
+    const zusatzBereich = document.querySelector("div.GOIOV fqe3L EevEz");
+    const techDataBereich = document.querySelector("article[data-testid='vip-technical-data-box'] dl.m4qzs");
+    console.debug('Debug: techDataBereich element:', techDataBereich);
 
     function cleanText(text) {
         return text
@@ -346,27 +347,37 @@
     // 6) Suche nach Technischen Daten
     // ***********************************************************************
     function sucheTechnischeDaten() {
-        if (!techDataBereich) return [];
+        console.debug('Debug: sucheTechnischeDaten aufgerufen.');
+        if (!techDataBereich) {
+            console.warn('Debug: techDataBereich nicht gefunden.');
+            return [];
+        }
         const daten = [];
         const dtElements = techDataBereich.querySelectorAll("dt");
+        console.debug('Debug: dtElements gefunden:', dtElements.length);
         techDataKonfigurationen.forEach(cfg => {
             if (!cfg.aktiv) return;
+            console.debug('Debug: Prüfe techDataKonfiguration für:', cfg.begriff, 'aktiv:', cfg.aktiv);
             for (let dt of dtElements) {
                 const dtText = dt.textContent.trim();
+                console.debug('Debug: dtText:', dtText);
                 if (dtText.toLowerCase() === cfg.begriff.toLowerCase()) {
                     const dd = dt.nextElementSibling;
                     if (dd && dd.tagName.toLowerCase() === 'dd') {
+                        console.debug('Debug: Übereinstimmung gefunden für:', cfg.begriff, 'Wert:', dd.textContent.trim());
                         daten.push({ title: cfg.begriff, value: dd.textContent.trim() });
                     }
                     break;
                 }
             }
         });
+        console.debug('Debug: Ergebnis von sucheTechnischeDaten:', daten);
         return daten;
     }
 
     function technischeDatenHinzufuegen(parentElement) {
         const technischeDaten = sucheTechnischeDaten();
+        console.debug('Debug: technischeDatenHinzufuegen, gefundene technische Daten:', technischeDaten);
         if (technischeDaten.length === 0) return;
         const techArticle = document.createElement('article');
         techArticle.className = 'A3G6X lAeeF vTKPY HaBLt ku0Os';
