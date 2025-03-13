@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mobile.de Ausstattungssuche mit modernem Popup & Import/Export (Generalisiertes Merging mit Merge-Konfiguration)
 // @namespace    http://tampermonkey.net/
-// @version      1.2.2
+// @version      1.2.3
 // @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de, entfernt Duplikate per Teilwort-Abgleich und führt konfigurierbare Ausstattungsgruppen zusammen. Die Merge-Gruppen können im Popup konfiguriert werden – neue Gruppen werden beim Hinzufügen unten angezeigt und erst beim Speichern alphabetisch sortiert. Außerdem wird die finale Ergebnisliste alphabetisch sortiert angezeigt.
 // @match        http://suchen.mobile.de/fahrzeuge/details.html*
 // @match        https://suchen.mobile.de/fahrzeuge/details.html*
@@ -546,8 +546,11 @@
         const ausstattungContainer = document.createElement('div');
         popup.appendChild(ausstattungContainer);
 
+        // *** HIER Sortierung entfernt ***
         function renderAusstattung() {
-            aktuelleAusstattungsKonfig.sort((a, b) => (a.anzeige || '').trim().localeCompare((b.anzeige || '').trim()));
+            // KEINE automatische Sortim().localeCompare((b.anzeige || '').trim()));ierung mehr!
+            // aktuelleAusstattungsKonfig.sort((a, b) => (a.anzeige || '').tr
+
             ausstattungContainer.innerHTML = '';
             aktuelleAusstattungsKonfig.forEach((item, index) => {
                 const divItem = document.createElement('div');
@@ -556,18 +559,22 @@
                 divItem.style.padding = '10px';
                 divItem.style.marginBottom = '8px';
                 divItem.style.backgroundColor = '#3b3c42';
+
                 const row1 = document.createElement('div');
                 row1.style.display = 'flex';
                 row1.style.flexWrap = 'wrap';
                 row1.style.alignItems = 'center';
+
                 const checkAktiv = document.createElement('input');
                 checkAktiv.style.marginRight = '5px';
                 checkAktiv.type = 'checkbox';
                 checkAktiv.checked = item.aktiv === true;
                 checkAktiv.addEventListener('change', () => { item.aktiv = checkAktiv.checked; });
+
                 const lblAktiv = document.createElement('label');
                 lblAktiv.textContent = ' aktiv';
                 lblAktiv.style.marginRight = '10px';
+
                 const inputAnzeige = document.createElement('input');
                 inputAnzeige.type = 'text';
                 inputAnzeige.value = item.anzeige;
@@ -576,6 +583,7 @@
                 inputAnzeige.style.minWidth = '150px';
                 inputAnzeige.style.marginRight = '10px';
                 inputAnzeige.addEventListener('input', () => { item.anzeige = inputAnzeige.value; });
+
                 const inputFarbe = document.createElement('input');
                 inputFarbe.type = 'text';
                 inputFarbe.value = item.farbe || '';
@@ -583,6 +591,7 @@
                 inputFarbe.style.marginRight = '10px';
                 inputFarbe.style.width = '100px';
                 inputFarbe.addEventListener('input', () => { item.farbe = inputFarbe.value; });
+
                 const btnLoeschen = document.createElement('button');
                 btnLoeschen.textContent = 'Löschen';
                 btnLoeschen.style.cursor = 'pointer';
@@ -592,12 +601,17 @@
                 btnLoeschen.style.borderRadius = '4px';
                 btnLoeschen.style.backgroundColor = '#a33';
                 btnLoeschen.style.color = '#fff';
-                btnLoeschen.addEventListener('click', () => { aktuelleAusstattungsKonfig.splice(index, 1); renderAusstattung(); });
+                btnLoeschen.addEventListener('click', () => {
+                    aktuelleAusstattungsKonfig.splice(index, 1);
+                    renderAusstattung();
+                });
+
                 row1.appendChild(checkAktiv);
                 row1.appendChild(lblAktiv);
                 row1.appendChild(inputAnzeige);
                 row1.appendChild(inputFarbe);
                 row1.appendChild(btnLoeschen);
+
                 const txtBegriffe = document.createElement('textarea');
                 txtBegriffe.value = (item.begriffe || []).join(', ');
                 txtBegriffe.style.width = '100%';
@@ -607,6 +621,7 @@
                 txtBegriffe.addEventListener('input', () => {
                     item.begriffe = txtBegriffe.value.split(',').map(s => s.trim()).filter(s => s.length > 0);
                 });
+
                 const txtVerboten = document.createElement('textarea');
                 txtVerboten.value = (item.verboten || []).join(', ');
                 txtVerboten.style.width = '100%';
@@ -616,13 +631,16 @@
                 txtVerboten.addEventListener('input', () => {
                     item.verboten = txtVerboten.value.split(',').map(s => s.trim()).filter(s => s.length > 0);
                 });
+
                 divItem.appendChild(row1);
                 divItem.appendChild(txtBegriffe);
                 divItem.appendChild(txtVerboten);
+
                 ausstattungContainer.appendChild(divItem);
             });
         }
         renderAusstattung();
+
         const btnNeuAusstattung = document.createElement('button');
         btnNeuAusstattung.textContent = 'Neuen Ausstattungseintrag hinzufügen';
         btnNeuAusstattung.style.cursor = 'pointer';
@@ -645,8 +663,10 @@
         techTitle.style.paddingBottom = '4px';
         techTitle.style.marginTop = '16px';
         popup.appendChild(techTitle);
+
         const techContainer = document.createElement('div');
         popup.appendChild(techContainer);
+
         function renderTechData() {
             techContainer.innerHTML = '';
             let draggedTechItemIndex = null;
@@ -657,6 +677,7 @@
                 divItem.style.padding = '10px';
                 divItem.style.marginBottom = '8px';
                 divItem.style.backgroundColor = '#3b3c42';
+
                 divItem.draggable = true;
                 divItem.addEventListener('dragstart', e => {
                     draggedTechItemIndex = index;
@@ -678,18 +699,22 @@
                         renderTechData();
                     }
                 });
+
                 const row1 = document.createElement('div');
                 row1.style.display = 'flex';
                 row1.style.flexWrap = 'wrap';
                 row1.style.alignItems = 'center';
+
                 const checkAktiv = document.createElement('input');
                 checkAktiv.style.marginRight = '5px';
                 checkAktiv.type = 'checkbox';
                 checkAktiv.checked = item.aktiv === true;
                 checkAktiv.addEventListener('change', () => { item.aktiv = checkAktiv.checked; });
+
                 const lblAktiv = document.createElement('label');
                 lblAktiv.textContent = ' aktiv';
                 lblAktiv.style.marginRight = '10px';
+
                 const inputBegriff = document.createElement('input');
                 inputBegriff.type = 'text';
                 inputBegriff.value = item.begriff;
@@ -698,6 +723,7 @@
                 inputBegriff.style.minWidth = '200px';
                 inputBegriff.style.marginRight = '10px';
                 inputBegriff.addEventListener('input', () => { item.begriff = inputBegriff.value; });
+
                 const btnLoeschenTech = document.createElement('button');
                 btnLoeschenTech.textContent = 'Löschen';
                 btnLoeschenTech.style.cursor = 'pointer';
@@ -706,16 +732,22 @@
                 btnLoeschenTech.style.borderRadius = '4px';
                 btnLoeschenTech.style.backgroundColor = '#a33';
                 btnLoeschenTech.style.color = '#fff';
-                btnLoeschenTech.addEventListener('click', () => { aktuelleTechKonfigurationen.splice(index, 1); renderTechData(); });
+                btnLoeschenTech.addEventListener('click', () => {
+                    aktuelleTechKonfigurationen.splice(index, 1);
+                    renderTechData();
+                });
+
                 row1.appendChild(checkAktiv);
                 row1.appendChild(lblAktiv);
                 row1.appendChild(inputBegriff);
                 row1.appendChild(btnLoeschenTech);
+
                 divItem.appendChild(row1);
                 techContainer.appendChild(divItem);
             });
         }
         renderTechData();
+
         const btnNeuTech = document.createElement('button');
         btnNeuTech.textContent = 'Neuen Tech-Parameter hinzufügen';
         btnNeuTech.style.cursor = 'pointer';
@@ -738,11 +770,13 @@
         mergeTitle.style.paddingBottom = '4px';
         mergeTitle.style.marginTop = '16px';
         popup.appendChild(mergeTitle);
+
         const mergeContainer = document.createElement('div');
         popup.appendChild(mergeContainer);
+
         function renderMergeConfig() {
             mergeContainer.innerHTML = '';
-            // Hier nicht sortieren – neue Einträge bleiben unten
+            // Neue Gruppen bleiben unten, daher kein Sortieren an dieser Stelle
             aktuelleMergeGruppen.forEach((group, index) => {
                 const divGroup = document.createElement('div');
                 divGroup.style.border = '1px solid #444';
@@ -750,6 +784,7 @@
                 divGroup.style.padding = '10px';
                 divGroup.style.marginBottom = '8px';
                 divGroup.style.backgroundColor = '#3b3c42';
+
                 const inputBasis = document.createElement('input');
                 inputBasis.type = 'text';
                 inputBasis.value = group.basis;
@@ -757,6 +792,7 @@
                 inputBasis.style.width = '40%';
                 inputBasis.style.marginRight = '10px';
                 inputBasis.addEventListener('input', () => { group.basis = inputBasis.value; });
+
                 const inputOrder = document.createElement('input');
                 inputOrder.type = 'text';
                 inputOrder.value = group.order.join(', ');
@@ -765,6 +801,7 @@
                 inputOrder.addEventListener('input', () => {
                     group.order = inputOrder.value.split(',').map(s => s.trim()).filter(s => s.length > 0);
                 });
+
                 const btnDeleteGroup = document.createElement('button');
                 btnDeleteGroup.textContent = 'Löschen';
                 btnDeleteGroup.style.cursor = 'pointer';
@@ -778,13 +815,16 @@
                     aktuelleMergeGruppen.splice(index, 1);
                     renderMergeConfig();
                 });
+
                 divGroup.appendChild(inputBasis);
                 divGroup.appendChild(inputOrder);
                 divGroup.appendChild(btnDeleteGroup);
+
                 mergeContainer.appendChild(divGroup);
             });
         }
         renderMergeConfig();
+
         const btnNewMergeGroup = document.createElement('button');
         btnNewMergeGroup.textContent = 'Neue Merge-Gruppe hinzufügen';
         btnNewMergeGroup.style.cursor = 'pointer';
@@ -807,12 +847,15 @@
         importExportTitle.style.paddingBottom = '4px';
         importExportTitle.style.marginTop = '16px';
         popup.appendChild(importExportTitle);
+
         const importExportContainer = document.createElement('div');
         popup.appendChild(importExportContainer);
+
         const exportLabel = document.createElement('div');
         exportLabel.textContent = 'Aktuelle Konfiguration (Export-JSON):';
         exportLabel.style.marginTop = '8px';
         importExportContainer.appendChild(exportLabel);
+
         const exportArea = document.createElement('textarea');
         exportArea.style.width = '100%';
         exportArea.style.height = '100px';
@@ -821,6 +864,7 @@
         exportArea.style.color = '#fff';
         exportArea.readOnly = true;
         importExportContainer.appendChild(exportArea);
+
         const btnGenerateExport = document.createElement('button');
         btnGenerateExport.textContent = 'Export aktualisieren';
         btnGenerateExport.style.cursor = 'pointer';
@@ -840,6 +884,7 @@
             exportArea.value = JSON.stringify(configObj, null, 2);
         });
         importExportContainer.appendChild(btnGenerateExport);
+
         const btnCopyExport = document.createElement('button');
         btnCopyExport.textContent = 'In Zwischenablage kopieren';
         btnCopyExport.style.cursor = 'pointer';
@@ -854,10 +899,12 @@
             document.execCommand('copy');
         });
         importExportContainer.appendChild(btnCopyExport);
+
         const importLabel = document.createElement('div');
         importLabel.textContent = 'Konfiguration importieren (füge JSON hier ein):';
         importLabel.style.marginTop = '12px';
         importExportContainer.appendChild(importLabel);
+
         const importArea = document.createElement('textarea');
         importArea.style.width = '100%';
         importArea.style.height = '100px';
@@ -865,6 +912,7 @@
         importArea.style.backgroundColor = '#3b3c42';
         importArea.style.color = '#fff';
         importExportContainer.appendChild(importArea);
+
         const btnImport = document.createElement('button');
         btnImport.textContent = 'Import durchführen';
         btnImport.style.cursor = 'pointer';
@@ -902,6 +950,7 @@
         const buttonBar = document.createElement('div');
         buttonBar.style.textAlign = 'right';
         buttonBar.style.marginTop = '20px';
+
         const cancelBtn = document.createElement('button');
         cancelBtn.textContent = 'Abbrechen';
         cancelBtn.style.cursor = 'pointer';
@@ -912,6 +961,7 @@
         cancelBtn.style.color = '#fff';
         cancelBtn.style.marginRight = '10px';
         cancelBtn.addEventListener('click', () => { removeOverlay(); });
+
         const saveBtn = document.createElement('button');
         saveBtn.textContent = 'Speichern';
         saveBtn.style.cursor = 'pointer';
@@ -921,21 +971,35 @@
         saveBtn.style.backgroundColor = '#2196F3';
         saveBtn.style.color = '#fff';
         saveBtn.addEventListener('click', () => {
-            // Vor dem Speichern alphabetisch sortieren:
+            // Vor dem Speichern Ausstattungen alphabetisch sortieren:
+            aktuelleAusstattungsKonfig.sort((a, b) =>
+                (a.anzeige || '').trim().localeCompare((b.anzeige || '').trim())
+            );
+
+            // Merge-Gruppen ebenfalls sortieren:
             aktuelleMergeGruppen.sort((a, b) => a.basis.localeCompare(b.basis));
+
             speichereConfig('mobilede_config', aktuelleAusstattungsKonfig);
             speichereConfig('mobilede_techconfig', aktuelleTechKonfigurationen);
             speichereConfig('mobilede_mergeGruppen', aktuelleMergeGruppen);
+
+            // Übernehmen in unsere globale Variablen:
             suchKonfigurationen = aktuelleAusstattungsKonfig;
             techDataKonfigurationen = aktuelleTechKonfigurationen;
             mergeGruppenConfig = aktuelleMergeGruppen;
+
             removeOverlay();
         });
+
         buttonBar.appendChild(cancelBtn);
         buttonBar.appendChild(saveBtn);
         popup.appendChild(buttonBar);
+
         overlay.appendChild(popup);
-        requestAnimationFrame(() => { overlay.style.opacity = '1'; popup.style.opacity = '1'; });
+        requestAnimationFrame(() => {
+            overlay.style.opacity = '1';
+            popup.style.opacity = '1';
+        });
     }
 
     // ***********************************************************************
