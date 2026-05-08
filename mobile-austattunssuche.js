@@ -1,9 +1,14 @@
 // ==UserScript==
 // @name         Mobile.de Ausstattungssuche mit modernem Popup & Import/Export (Generalisiertes Merging mit Merge-Konfiguration)
-// @namespace    http://tampermonkey.net/
-// @version      2.4.1
+// @namespace    https://github.com/jxnxtxan/Mobile
+// @version      2.4.2
 // @author       jxnxtxan
 // @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de. Token-basierte Match-Engine mit Wortgrenzen, Quellen-Gewichtung (Feature-Liste vs. Beschreibung), SPA-Robustheit, Konfig-Popup mit Filter, Drag&Drop, Reset, Backup und Schema-Versionierung.
+// @homepageURL  https://github.com/jxnxtxan/Mobile
+// @supportURL   https://github.com/jxnxtxan/Mobile/issues
+// @updateURL    https://raw.githubusercontent.com/jxnxtxan/Mobile/main/mobile-austattunssuche.js
+// @downloadURL  https://raw.githubusercontent.com/jxnxtxan/Mobile/main/mobile-austattunssuche.js
+// @icon         https://www.google.com/s2/favicons?sz=64&domain=mobile.de
 // @match        http://suchen.mobile.de/fahrzeuge/details.html*
 // @match        https://suchen.mobile.de/fahrzeuge/details.html*
 // @match        http://suchen.mobile.de/auto-inserat/*
@@ -11,6 +16,8 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
+// @run-at       document-idle
+// @noframes
 // ==/UserScript==
 
 (function() {
@@ -1023,7 +1030,7 @@
         let expandedAusstattungIndex = null;
         /** Hilfe-Panel je Tab (Ausstattung, Tech, Merge, Import/Export, Config) — vermeidet Zustandsverlust beim Tab-Wechsel. */
         const helpExpandedByTab = { aus: false, tech: false, merge: false, ie: false, config: false };
-        const SCRIPT_UI_VERSION = '2.4.1';
+        const SCRIPT_UI_VERSION = '2.4.2';
 
         const prevBodyOverflow = document.body.style.overflow;
         document.body.style.overflow = 'hidden';
