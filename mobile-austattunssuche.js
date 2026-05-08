@@ -1,22 +1,36 @@
 // ==UserScript==
 // @name         Mobile.de Ausstattungssuche mit modernem Popup & Import/Export (Generalisiertes Merging mit Merge-Konfiguration)
 // @namespace    http://tampermonkey.net/
-// @version      1.2.3
-// @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de, entfernt Duplikate per Teilwort-Abgleich und führt konfigurierbare Ausstattungsgruppen zusammen. Die Merge-Gruppen können im Popup konfiguriert werden – neue Gruppen werden beim Hinzufügen unten angezeigt und erst beim Speichern alphabetisch sortiert. Außerdem wird die finale Ergebnisliste alphabetisch sortiert angezeigt.
+// @version      2.0.5
+// @author       jxnxtxan
+// @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de. Token-basierte Match-Engine mit Wortgrenzen, Quellen-Gewichtung (Feature-Liste vs. Beschreibung), SPA-Robustheit, Konfig-Popup mit Filter, Drag&Drop, Reset, Backup und Schema-Versionierung.
 // @match        http://suchen.mobile.de/fahrzeuge/details.html*
 // @match        https://suchen.mobile.de/fahrzeuge/details.html*
 // @match        http://suchen.mobile.de/auto-inserat/*
 // @match        https://suchen.mobile.de/auto-inserat/*
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    // ***********************************************************************
-    // 1) Hilfsfunktionen zum Speichern/Laden (GM_getValue / GM_setValue)
-    // ***********************************************************************
+    // ============================================================
+    // Konstanten / Schema
+    // ============================================================
+    const SCHEMA_VERSION = 3;
+    const STORAGE_KEYS = {
+        config:        'mobilede_config',
+        techConfig:    'mobilede_techconfig',
+        mergeGroups:   'mobilede_mergeGruppen',
+        version:       'mobilede_config_version',
+        backupPrefix:  'mobilede_config_backup_'
+    };
+
+    // ============================================================
+    // 1) GM_*-Speicherhilfen
+    // ============================================================
     function ladeConfig(key) {
         try {
             const str = GM_getValue(key, null);
@@ -27,7 +41,6 @@
             return null;
         }
     }
-
     function speichereConfig(key, data) {
         try {
             GM_setValue(key, JSON.stringify(data));
@@ -36,384 +49,528 @@
         }
     }
 
-    // ***********************************************************************
-    // 2) Standard-Konfigurationen (Fallback)
-    // ***********************************************************************
-    let suchKonfigurationenDefault = [
+    // ============================================================
+    // 2) Default-Konfigurationen (bereinigt)
+    //    - umlauts und diakritika dürfen vorkommen, werden bei
+    //      cleanText() / tokenize() normalisiert.
+    //    - 'nurInFeatures: true' ignoriert Treffer aus Beschreibung.
+    //    - 'compound: true' erlaubt Substring-Match an beliebiger
+    //      Stelle im Token (selten nötig).
+    // ============================================================
+    const suchKonfigurationenDefault = [
         { begriffe: ['4wd', 'allrad'], anzeige: 'Allrad', farbe: 'orange', aktiv: true },
         { begriffe: ['quattro'], anzeige: 'Quattro / Allrad', farbe: 'orange', aktiv: true },
-        { begriffe: ['Ambiente-Beleuchtung', 'ambiente beleuchtung'], anzeige: 'Ambiente-Beleuchtung', aktiv: false },
+        { begriffe: ['ambiente beleuchtung', 'ambiente licht', 'stimmungslicht'], anzeige: 'Ambiente-Beleuchtung', aktiv: true },
         { begriffe: ['scheiben abgedunk', 'abgedunk scheib'], anzeige: 'Abgedunkelte Scheiben', aktiv: true },
-        { begriffe: ['akustik glas', 'frontscheibe akus'], anzeige: 'Akustikverglasung', aktiv: true },
-        { begriffe: ['seitenscheibe akus', 'Türscheiben akus'], anzeige: 'Seitenscheiben Akustikverglasung', aktiv: true },
+        { begriffe: ['akustikverglasung', 'akustik verglasung', 'frontscheibe akus'], anzeige: 'Akustikverglasung', aktiv: true },
+        { begriffe: ['seitenscheibe akus', 'türscheiben akus', 'seitenscheibe verglasung'], anzeige: 'Seitenscheiben Akustikverglasung', aktiv: true },
         { begriffe: ['adapt kurv licht', 'kurvenlicht adaptiv'], anzeige: 'Adaptives Kurvenlicht', aktiv: false },
         { begriffe: ['tempomat abstand', 'adapt temp', 'acc'], anzeige: 'Abstandstempomat', farbe: 'orange', aktiv: true },
         { begriffe: ['abstands warn', 'distance warn'], anzeige: 'Abstandswarner', aktiv: false },
-        { begriffe: ['ambiente licht', 'stimmungslicht'], anzeige: 'Ambiente-Beleuchtung', aktiv: true },
-        { begriffe: ['Anhängevorrichtung', 'Anhängerkupplung', 'Anhaengerkupplung', 'Anhaengevorrichtung', 'ahk'], anzeige: 'Anhängerkupplung', farbe: 'red', aktiv: true },
-        { begriffe: ['Anhängevorrichtung schwenkbar', 'Anhaengevorrichtung schwenkbar', 'Anhängerkupplung schwenkbar', 'Anhaengerkupplung schwenkbar'], anzeige: 'Anhängerkupplung schwenkbar', aktiv: true },
-        { begriffe: ['armlehne', 'lehne'], anzeige: 'Armlehne', aktiv: false },
-        { begriffe: ['apple carplay'], anzeige: 'Apple Carplay', aktiv: true },
+        { begriffe: ['anhängevorrichtung', 'anhängerkupplung', 'ahk'], anzeige: 'Anhängerkupplung', farbe: 'red', aktiv: true, nurInFeatures: true },
+        { begriffe: ['anhängevorrichtung schwenkbar', 'anhängerkupplung schwenkbar'], anzeige: 'Anhängerkupplung schwenkbar', aktiv: true },
+        { begriffe: ['armlehne'], anzeige: 'Armlehne', aktiv: false },
+        { begriffe: ['apple carplay', 'apple car play'], anzeige: 'Apple Carplay', aktiv: true },
         { begriffe: ['android auto'], anzeige: 'Android Auto', aktiv: true },
         { begriffe: ['außenspiegel elek verst', 'elek spiegel'], anzeige: 'Außenspiegel elektr. verstellbar', aktiv: true },
-        { begriffe: ['außenspiegel heiz'], anzeige: 'Außenspiegel beheizbar', aktiv: true },
-        { begriffe: ['Bang & Olufsen', 'b&o', 'Bang Olufsen'], anzeige: 'Bang & Olufsen Sound System', farbe: 'red', aktiv: true },
-        { begriffe: ['Beats'], anzeige: 'Beats Sound System', farbe: 'red', aktiv: true },
+        { begriffe: ['außenspiegel heizung', 'außenspiegel beheiz'], anzeige: 'Außenspiegel beheizbar', aktiv: true },
+        { begriffe: ['bang & olufsen', 'b&o', 'bang olufsen'], anzeige: 'Bang & Olufsen Sound System', farbe: 'red', aktiv: true, nurInFeatures: true },
+        { begriffe: ['beats'], anzeige: 'Beats Sound System', farbe: 'red', aktiv: true, nurInFeatures: true },
         { begriffe: ['blendfrei fernlicht', 'anti blend licht', 'fernlicht assist', 'auto fernlicht'], anzeige: 'Fernlicht Assistent', farbe: 'orange', aktiv: true },
         { begriffe: ['brems assist', 'brake assist'], anzeige: 'Bremsassistent', aktiv: true },
-        { begriffe: ['Business-Paket Professional', 'busin', 'Business', 'Busin paket profess'], anzeige: 'Business Paket', aktiv: true },
-        { begriffe: ['Burmester', 'burme'], anzeige: 'Burmester Sound System', farbe: 'red', aktiv: true },
-        { begriffe: ['canton'], anzeige: 'Canton Sound System', farbe: 'red', aktiv: true },
-        { begriffe: ['dachhimmel anth', 'himmel anth', 'Dachhimmel schwarz', 'Dachhimmel Stoff schwarz', 'dachhim schwarz'], anzeige: 'Dachhimmel Anthrazit / Schwarz', aktiv: true },
+        { begriffe: ['business paket professional', 'business paket'], anzeige: 'Business Paket', aktiv: true },
+        { begriffe: ['burmester'], anzeige: 'Burmester Sound System', farbe: 'red', aktiv: true, nurInFeatures: true },
+        { begriffe: ['canton'], anzeige: 'Canton Sound System', farbe: 'red', aktiv: true, nurInFeatures: true },
+        { begriffe: ['dachhimmel anth', 'himmel anth', 'dachhimmel schwarz', 'dachhim schwarz'], anzeige: 'Dachhimmel Anthrazit / Schwarz', aktiv: true },
         { begriffe: ['dachhimmel alcantara', 'himmel alcant'], anzeige: 'Dachhimmel Alcantara', aktiv: true },
         { begriffe: ['elek fenst'], anzeige: 'Elektr. Fensterheber', aktiv: false },
         { begriffe: ['elek heckklappe'], anzeige: 'Elektr. Heckklappe', aktiv: false },
-        { begriffe: ['sitz elek verstell'], anzeige: 'Elektr. Sitzeinstellung', aktiv: true },
+        { begriffe: ['sitz elek verstell', 'sitzeinstellung', 'sitz einstellung', 'elektr sitz'], anzeige: 'Elektr. Sitzeinstellung', aktiv: true },
         { begriffe: ['memory sitz', 'sitz memory', 'sitz elek verstell memory'], anzeige: 'Elektr. Sitzeinstellung mit Memory-Funktion', farbe: 'red', aktiv: true },
         { begriffe: ['garantie'], anzeige: 'Garantie', aktiv: false },
-        { begriffe: ['head up', 'HUD', 'head'], anzeige: 'Head-Up Display', farbe: 'red', aktiv: true },
+        { begriffe: ['head up', 'head-up', 'hud'], anzeige: 'Head-Up Display', farbe: 'red', aktiv: true },
         { begriffe: ['heckantrieb', 'antrieb heck'], anzeige: 'Heckantrieb', aktiv: false },
-        { begriffe: ['harman kardon', 'h&k', 'harman', 'kardon'], anzeige: 'Harman Kardon Sound System', farbe: 'red', aktiv: true },
-        { begriffe: ['induktiv laden', 'wireless charge'], anzeige: 'Induktionsladeschale für Smartphone (Wireless Charging)', aktiv: false },
+        { begriffe: ['harman kardon', 'h&k', 'harman'], anzeige: 'Harman Kardon Sound System', farbe: 'red', aktiv: true, nurInFeatures: true },
+        { begriffe: ['induktiv laden', 'induktion laden', 'induktionsladen', 'wireless charge'], anzeige: 'Induktionsladeschale für Smartphone (Wireless Charging)', aktiv: false },
         { begriffe: ['innenspiegel abblend', 'inne spiegel auto'], anzeige: 'Innenspiegel autom. abblendend', aktiv: true },
-        { begriffe: ['lenkradheizung', 'Beheizbares Lenkrad', 'lenk heiz'], anzeige: 'Lenkradheizung', aktiv: true },
+        { begriffe: ['lenkradheizung', 'beheizbares lenkrad', 'lenkrad heizung', 'lenkrad beheiz'], anzeige: 'Lenkradheizung', aktiv: true },
         { begriffe: ['matrix led', 'matrix scheinwerfer', 'matrix beam', 'matrix licht'], anzeige: 'Matrix Scheinwerfer', farbe: 'red', aktiv: true },
         { begriffe: ['panorama', 'panoramadach', 'glas dach'], anzeige: 'Panoramadach', farbe: 'orange', aktiv: true },
         { begriffe: ['park assist', 'park hilfe'], anzeige: 'Parkassistent', aktiv: true },
         { begriffe: ['pdc', 'park dist contr'], anzeige: 'Park-Distance-Control', aktiv: true },
         { begriffe: ['reifen druck', 'druck kontrolle'], anzeige: 'Reifendruck Kontrollsystem', aktiv: true },
-        { begriffe: ['Rückfahrkamera', 'Rückfahrkamerasystem', 'Rueckfahrkamera'], anzeige: 'Rückfahrkamera', aktiv: true },
+        { begriffe: ['rückfahrkamera', 'rückfahrkamerasystem'], anzeige: 'Rückfahrkamera', aktiv: true },
         { begriffe: ['seiten airbag', 'airbag seite'], anzeige: 'Seitenairbag', aktiv: false },
         { begriffe: ['spiegel klappbar', 'elek spiegel klapp'], anzeige: 'Seitenspiegel anklappbar', aktiv: true },
         { begriffe: ['scheckheft gepflegt', 'scheckheft'], anzeige: 'Scheckheftgepflegt', farbe: 'red', aktiv: true },
         { begriffe: ['keyless', 'schlüssel frei', 'schlüssellose zentral'], anzeige: 'Schlüssellose Zentralverriegelung (Keyless)', farbe: 'orange', aktiv: true },
-        { begriffe: ['Servoschließung tür', 'soft close', 'softclose'], verboten: ['pedal', 'virtuell'], anzeige: 'Softclose', aktiv: true },
-        { begriffe: ['Sonnenschutzverglasung'], anzeige: 'Sonnenschutzverglasung', aktiv: true },
-        { begriffe: ['Sonnenschutzverglasung abgedunkelt'], anzeige: 'Sonnenschutzverglasung abgedunkelt', aktiv: true },
+        { begriffe: ['servoschließung tür', 'soft close', 'softclose'], verboten: ['pedal', 'virtuell'], anzeige: 'Softclose', aktiv: true },
+        { begriffe: ['sonnenschutzverglasung'], anzeige: 'Sonnenschutzverglasung', aktiv: true },
+        { begriffe: ['sonnenschutzverglasung abgedunkelt'], anzeige: 'Sonnenschutzverglasung abgedunkelt', aktiv: true },
         { begriffe: ['spurhalte assist', 'lane assist'], anzeige: 'Spurhalteassistent', aktiv: true },
-        { begriffe: ['Standheizung', 'standhei'], anzeige: 'Standheizung', aktiv: true },
+        { begriffe: ['standheizung', 'standhei'], anzeige: 'Standheizung', aktiv: true },
         { begriffe: ['standbelüf'], anzeige: 'Standbelüftung', aktiv: true },
         { begriffe: ['start stop', 'auto stop'], anzeige: 'Start/Stopp-Automatik', aktiv: false },
-        { begriffe: ['sitz heiz', 'heizung sitz'], anzeige: 'Sitzheizung', farbe: 'orange', aktiv: true },
-        { begriffe: ['sitz belüft', 'sitz kühl'], anzeige: 'Sitzbelüftung', farbe: 'red', aktiv: true },
+        { begriffe: ['sitzheizung', 'sitz heizung', 'heizung sitz'], anzeige: 'Sitzheizung', farbe: 'orange', aktiv: true },
+        { begriffe: ['sitzbelüftung', 'sitz belüftung', 'sitzkühlung', 'sitz kühlung'], anzeige: 'Sitzbelüftung', farbe: 'red', aktiv: true },
         { begriffe: ['totwinkel', 'blind spot'], anzeige: 'Totwinkel-Assistent', aktiv: true },
         { begriffe: ['traction control', 'traktio kontr'], anzeige: 'Traktionskontrolle', aktiv: false },
         { begriffe: ['360 grad', '360 kamera', '360 cam', 'umfeld kamera', 'surround cam'], anzeige: '360 Grad Kamera', farbe: 'red', aktiv: true },
         { begriffe: ['verkehrszeichen', 'road sign'], anzeige: 'Verkehrszeichenerkennung', aktiv: true },
-        { begriffe: ['digital cockpit', 'digi kombi'], anzeige: 'Volldigitales Kombiinstrument', aktiv: true },
+        { begriffe: ['digital cockpit', 'virtual cockpit', 'volldigit kombiinstrument', 'kombiinstrument digital'], anzeige: 'Volldigitales Kombiinstrument', aktiv: true },
         { begriffe: ['winter paket', 'kalt paket'], anzeige: 'Winterpaket', aktiv: true },
-        { begriffe: ['zentral verriegelung', 'central lock', 'Zentralverriegelung'], anzeige: 'Zentralverriegelung', aktiv: true },
+        { begriffe: ['zentral verriegelung', 'central lock', 'zentralverriegelung'], anzeige: 'Zentralverriegelung', aktiv: true }
     ];
 
-    let techDataKonfigurationenDefault = [
-        { begriff: 'Fahrzeugzustand', aktiv: true },
-        { begriff: 'Erstzulassung', aktiv: true },
-        { begriff: 'Innenausstattung', aktiv: true },
+    const techDataKonfigurationenDefault = [
+        { begriff: 'Fahrzeugzustand',    aktiv: true },
+        { begriff: 'Erstzulassung',      aktiv: true },
+        { begriff: 'Innenausstattung',   aktiv: true },
         { begriff: 'Farbe (Hersteller)', aktiv: true },
-        { begriff: 'Farbe', aktiv: true },
+        { begriff: 'Farbe',              aktiv: true }
     ];
 
-    // Default-Merge-Gruppen-Konfiguration
-    let mergeGruppenConfigDefault = [
-        {
-            basis: "außenspiegel",
-            order: ["elektr. verstellbar", "klappbar", "auto. abblend."]
-        }
+    const mergeGruppenConfigDefault = [
+        { basis: 'außenspiegel', order: ['elektr. verstellbar', 'klappbar', 'auto. abblend.'] }
     ];
 
-    // ***********************************************************************
-    // 3) Aktuelle Konfigurationen laden
-    // ***********************************************************************
-    let suchKonfigurationen = ladeConfig('mobilede_config') || suchKonfigurationenDefault;
-    let techDataKonfigurationen = ladeConfig('mobilede_techconfig') || techDataKonfigurationenDefault;
-    let mergeGruppenConfig = ladeConfig('mobilede_mergeGruppen') || mergeGruppenConfigDefault;
-
-    function getMaxDistanceByWordCount(count) {
-        switch (count) {
-            case 2: return 30;
-            case 3: return 70;
-            case 4: return 100;
-            case 5: return 150;
-            default: return 140;
+    // ============================================================
+    // 3) Migration & Konfig-Laden
+    // ============================================================
+    /**
+     * Vereint die begriffe-Listen einer User-Config mit den aktuellen
+     * Defaults (per anzeige-Schlüssel). Neue Begriffsvarianten aus den
+     * Defaults werden additiv ergänzt, User-eigene begriffe bleiben.
+     * Andere Felder (anzeige, farbe, aktiv, verboten, …) werden NICHT
+     * angerührt.
+     */
+    function unionBegriffeMitDefaults(userConfig, defaults) {
+        if (!Array.isArray(userConfig)) return userConfig;
+        const defaultByAnzeige = new Map();
+        defaults.forEach(d => {
+            if (d && d.anzeige) defaultByAnzeige.set(d.anzeige.trim().toLowerCase(), d);
+        });
+        let added = 0;
+        const merged = userConfig.map(item => {
+            const key = (item.anzeige || '').trim().toLowerCase();
+            const def = defaultByAnzeige.get(key);
+            if (!def || !Array.isArray(def.begriffe)) return item;
+            const existing = new Set((item.begriffe || []).map(b => String(b).toLowerCase().trim()));
+            const additions = def.begriffe.filter(b => !existing.has(String(b).toLowerCase().trim()));
+            if (additions.length === 0) return item;
+            added += additions.length;
+            return { ...item, begriffe: [...(item.begriffe || []), ...additions] };
+        });
+        if (added > 0) {
+            console.info(`mobilede: ${added} neue Default-Begriffe in User-Config integriert.`);
         }
+        return merged;
     }
 
-    // ***********************************************************************
-    // 4) DOM-Auswahl & Textaufbereitung
-    // ***********************************************************************
-    const ausstattungsListe = document.querySelectorAll("ul[data-testid='vip-features-list'] li");
-    const beschreibungsBereich = document.querySelector("div[data-testid='vip-vehicle-description-text']");
-    const zusatzBereich = document.querySelector("div.GOIOV fqe3L EevEz");
-    const techDataBereich = document.querySelector("article[data-testid='vip-technical-data-box'] dl.m4qzs");
-    console.debug('Debug: techDataBereich element:', techDataBereich);
+    function migrateIfNeeded() {
+        const stored = ladeConfig(STORAGE_KEYS.version);
+        if (stored === SCHEMA_VERSION) return;
+        // v? -> v3: Default-Begriffe additiv in vorhandene User-Config mergen.
+        const userConfig = ladeConfig(STORAGE_KEYS.config);
+        if (Array.isArray(userConfig)) {
+            const merged = unionBegriffeMitDefaults(userConfig, suchKonfigurationenDefault);
+            speichereConfig(STORAGE_KEYS.config, merged);
+        }
+        speichereConfig(STORAGE_KEYS.version, SCHEMA_VERSION);
+    }
+    migrateIfNeeded();
 
+    let suchKonfigurationen     = ladeConfig(STORAGE_KEYS.config)      || suchKonfigurationenDefault;
+    let techDataKonfigurationen = ladeConfig(STORAGE_KEYS.techConfig)  || techDataKonfigurationenDefault;
+    let mergeGruppenConfig      = ladeConfig(STORAGE_KEYS.mergeGroups) || mergeGruppenConfigDefault;
+
+    // ============================================================
+    // 4) Textaufbereitung & Tokenisierung
+    // ============================================================
     function cleanText(text) {
+        if (!text) return '';
         return text
+            .replace(/ä/g, 'ae').replace(/Ä/g, 'Ae')
+            .replace(/ö/g, 'oe').replace(/Ö/g, 'Oe')
+            .replace(/ü/g, 'ue').replace(/Ü/g, 'Ue')
+            .replace(/ß/g, 'ss')
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
             .replace(/[–—\-]+/g, ' ')
             .replace(/[\n\r\t]+/g, ' ')
-            .replace(/\s{2,}/g, ' ')
             .replace(/([a-z])([A-Z])/g, '$1 $2')
+            .replace(/[,;:|()\[\]"']/g, ' ')
+            .replace(/\s{2,}/g, ' ')
             .trim()
             .toLowerCase();
     }
 
-    function getGesamtText() {
-        let textParts = [];
-        ausstattungsListe.forEach(li => {
-            let txt = li.textContent.trim();
-            if (txt) {
-                txt = cleanText(txt);
-                textParts.push(txt);
-            }
-        });
-        if (beschreibungsBereich) {
-            let txt = beschreibungsBereich.textContent.replace(/,/g, ' ').trim();
-            if (txt) {
-                txt = cleanText(txt);
-                textParts.push(txt);
-            }
-        }
-        if (zusatzBereich) {
-            let txt = zusatzBereich.textContent.trim();
-            if (txt) {
-                txt = cleanText(txt);
-                textParts.push(txt);
-            }
-        }
-        console.log("Bereinigter Gesamter Text:", textParts.join(' | '));
-        return textParts;
+    function tokenize(text) {
+        const cleaned = cleanText(text);
+        if (!cleaned) return [];
+        return cleaned.split(/\s+/).filter(Boolean);
     }
 
-    // ***********************************************************************
-    // 5) Suche nach Begriffen
-    // ***********************************************************************
-    function sucheBegriffe() {
-        const gefundene = [];
-        const textZeilen = getGesamtText();
-        suchKonfigurationen.forEach(cfg => {
-            if (!cfg.aktiv) return;
-            let gefunden = false;
-            for (let zeile of textZeilen) {
-                const zeileLower = zeile;
-                for (let begriff of (cfg.begriffe || [])) {
-                    const teilbegriffe = begriff.toLowerCase().trim().split(/\s+/).filter(x => x);
-                    if (teilbegriffe.length === 0) continue;
-                    if (allWordsWithinDistance(zeileLower, teilbegriffe)) {
-                        if (cfg.verboten && cfg.verboten.length > 0) {
-                            const forbiddenPattern = new RegExp(cfg.verboten.join('|'), 'i');
-                            const zwischenText = getTextBetweenWords(zeileLower, teilbegriffe);
-                            if (forbiddenPattern.test(zwischenText)) {
-                                console.log(`Verbotene Wörter zwischen Keywords gefunden für: ${cfg.anzeige}`);
-                                continue;
-                            }
-                        }
-                        gefundene.push({
-                            anzeige: cfg.anzeige,
-                            farbe: (cfg.farbe || '#66ff66').toLowerCase()
-                        });
-                        gefunden = true;
-                        break;
-                    }
-                }
-                if (gefunden) break;
-            }
-        });
-
-        // Hilfsfunktionen
-        function tokenizeAndNormalize(str) {
-            return str
-                .toLowerCase()
-                .replace(/[.,\-]+/g, ' ')
-                .replace(/\s+/g, ' ')
-                .trim()
-                .split(' ')
-                .filter(token => token.length > 0);
-        }
-        function tokensMatch(tokenA, tokenB) {
-            const a = tokenA.toLowerCase();
-            const b = tokenB.toLowerCase();
-            if (a === b) return true;
-            return a.length < b.length ? b.startsWith(a) : a.startsWith(b);
-        }
-        function allWordsContained(shortStr, longStr) {
-            const shortTokens = tokenizeAndNormalize(shortStr);
-            const longTokens = tokenizeAndNormalize(longStr);
-            const longSet = new Set(longTokens);
-            return shortTokens.every(shortTok => {
-                return [...longSet].some(longTok => tokensMatch(shortTok, longTok));
-            });
-        }
-
-        // Duplikate entfernen
-        const uniqueMap = new Map();
-        gefundene.forEach(obj => uniqueMap.set(obj.anzeige, obj));
-        let uniqueGefundene = [...uniqueMap.values()];
-        uniqueGefundene.sort((a, b) => a.anzeige.localeCompare(b.anzeige));
-        const endgueltigeListe = [];
-        for (let i = 0; i < uniqueGefundene.length; i++) {
-            const textI = uniqueGefundene[i].anzeige;
-            let sollEntfallen = false;
-            for (let j = 0; j < uniqueGefundene.length; j++) {
-                if (i === j) continue;
-                if (allWordsContained(textI, uniqueGefundene[j].anzeige) && uniqueGefundene[j].anzeige.length > textI.length) {
-                    sollEntfallen = true;
-                    break;
-                }
-            }
-            if (!sollEntfallen) endgueltigeListe.push(uniqueGefundene[i]);
-        }
-        uniqueGefundene = endgueltigeListe;
-
-        // GENERALISIERTES MERGING anhand konfigurierbarer Merge-Gruppen
-        function generalizedMergeEntries(entries, mergeGruppen) {
-            let result = [...entries];
-            mergeGruppen.forEach(group => {
-                const basis = group.basis.toLowerCase();
-                const order = group.order.map(item => item.toLowerCase());
-                let groupEntries = result.filter(e => e.anzeige.toLowerCase().includes(basis));
-                if (groupEntries.length > 1) {
-                    result = result.filter(e => !e.anzeige.toLowerCase().includes(basis));
-                    let modifiers = groupEntries.map(e => {
-                        return e.anzeige.toLowerCase().replace(basis, "").trim();
-                    }).filter(mod => mod.length > 0);
-                    modifiers = Array.from(new Set(modifiers));
-                    modifiers.sort((a, b) => {
-                        let ia = order.findIndex(key => a.includes(key.replace(/\./g, '').trim()));
-                        let ib = order.findIndex(key => b.includes(key.replace(/\./g, '').trim()));
-                        if (ia === -1) ia = 999;
-                        if (ib === -1) ib = 999;
-                        return ia - ib;
-                    });
-                    let mergedText = group.basis + (modifiers.length ? " " + modifiers.join(" ") : "");
-                    result.push({
-                        anzeige: mergedText,
-                        farbe: groupEntries[0].farbe,
-                        aktiv: groupEntries[0].aktiv
-                    });
-                }
-            });
-            return result;
-        }
-
-        uniqueGefundene = generalizedMergeEntries(uniqueGefundene, mergeGruppenConfig);
-
-        // WICHTIG: Endgültige alphabetische Sortierung vor Rückgabe
-        uniqueGefundene.sort((a, b) => a.anzeige.localeCompare(b.anzeige));
-        console.log("Gefundene (nach generalisiertem Merging und Sortierung):", uniqueGefundene.map(item => item.anzeige));
-        return uniqueGefundene;
+    function escapeRegex(str) {
+        return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
-    function allWordsWithinDistance(line, words) {
-        const distance = getMaxDistanceByWordCount(words.length);
-        let positions = [];
-        for (let w of words) {
-            const posList = [];
-            let startIndex = 0;
-            while (true) {
-                let idx = line.indexOf(w, startIndex);
-                if (idx === -1) break;
-                posList.push(idx);
-                startIndex = idx + 1;
-            }
-            if (posList.length === 0) return false;
-            positions.push(posList);
-        }
-        if (words.length === 1) return positions[0].length > 0;
-        function cartesian(arr) {
-            return arr.reduce((acc, val) => {
-                let res = [];
-                acc.forEach(a => {
-                    val.forEach(b => res.push(a.concat(b)));
-                });
-                return res;
-            }, [[]]);
-        }
-        const combos = cartesian(positions);
-        for (let combo of combos) {
-            if (Math.max(...combo) - Math.min(...combo) <= distance) return true;
-        }
+    // ============================================================
+    // 5) Match-Engine
+    //    - tokenMatches: exakt, Prefix oder Suffix (>= 4 Zeichen),
+    //      Substring nur bei compound: true.
+    //    - matchInTokens: Sliding-Window über Trefferpositionen,
+    //      O(n log n) statt kartesischem Produkt.
+    // ============================================================
+    const MAX_WORD_GAP = { 1: 0, 2: 3, 3: 6, 4: 10, 5: 14 };
+    function getMaxWordGap(parts) {
+        return MAX_WORD_GAP[parts] || (parts > 5 ? parts * 3 : 0);
+    }
+
+    function tokenMatches(token, part, compound) {
+        if (!token || !part) return false;
+        if (token === part) return true;
+        if (part.length < 4) return false;
+        if (compound) return token.includes(part);
+        if (token.startsWith(part) || token.endsWith(part)) return true;
+        // Mid-substring nur ab 5 Zeichen erlauben, um false-positives bei
+        // 4-Zeichen-Patterns (head, glas, heiz, ende, …) zu vermeiden.
+        if (part.length >= 5 && token.includes(part)) return true;
         return false;
     }
 
-    function getTextBetweenWords(text, keywords) {
-        const positions = keywords.map(kw => text.indexOf(kw));
-        if (positions.includes(-1)) return '';
-        const start = Math.min(...positions);
-        const end = Math.max(...positions) + keywords[keywords.length - 1].length;
-        return text.substring(start, end);
+    function findPositions(tokens, part, compound) {
+        const positions = [];
+        for (let i = 0; i < tokens.length; i++) {
+            if (tokenMatches(tokens[i], part, compound)) positions.push(i);
+        }
+        return positions;
     }
 
-    // ***********************************************************************
-    // 6) Suche nach Technischen Daten
-    // ***********************************************************************
-    function sucheTechnischeDaten() {
-        console.debug('Debug: sucheTechnischeDaten aufgerufen.');
-        if (!techDataBereich) {
-            console.warn('Debug: techDataBereich nicht gefunden.');
-            return [];
+    /**
+     * Sucht ein Fenster in `tokens`, das alle `parts` enthält und
+     * dabei höchstens maxGap Wörter Differenz zwischen erstem und
+     * letztem getroffenen Token hat.
+     * Gibt {startIdx, endIdx} oder null zurück.
+     */
+    function matchInTokens(tokens, parts, maxGap, compound) {
+        if (parts.length === 0 || tokens.length === 0) return null;
+        if (parts.length === 1) {
+            const pos = findPositions(tokens, parts[0], compound);
+            if (pos.length === 0) return null;
+            return { startIdx: pos[0], endIdx: pos[0] };
         }
+        const positionLists = parts.map(p => findPositions(tokens, p, compound));
+        for (const list of positionLists) {
+            if (list.length === 0) return null;
+        }
+        // Pointer pro Liste -> sliding window
+        const pointers = new Array(positionLists.length).fill(0);
+        let best = null;
+        while (true) {
+            const current = positionLists.map((list, i) => list[pointers[i]]);
+            const min = Math.min(...current);
+            const max = Math.max(...current);
+            if (max - min <= maxGap) {
+                if (!best || (max - min) < (best.endIdx - best.startIdx)) {
+                    best = { startIdx: min, endIdx: max };
+                    if (max - min === parts.length - 1) return best;
+                }
+            }
+            // bewege den Pointer mit dem kleinsten Wert weiter
+            const minListIdx = current.indexOf(min);
+            pointers[minListIdx]++;
+            if (pointers[minListIdx] >= positionLists[minListIdx].length) break;
+        }
+        return best;
+    }
+
+    function isForbiddenInWindow(tokens, window, verboten) {
+        if (!verboten || verboten.length === 0) return false;
+        const slice = tokens.slice(window.startIdx, window.endIdx + 1).join(' ');
+        const pattern = new RegExp(verboten.map(escapeRegex).join('|'), 'i');
+        return pattern.test(slice);
+    }
+
+    // ============================================================
+    // 6) Quellen-Extraktion (lazy, mit heuristischem Fallback)
+    // ============================================================
+    function getFeatureItems() {
+        return Array.from(document.querySelectorAll("ul[data-testid='vip-features-list'] li"));
+    }
+    function getDescriptionEl() {
+        return document.querySelector("div[data-testid='vip-vehicle-description-text']");
+    }
+    function getTechDataDl() {
+        return document.querySelector("article[data-testid='vip-technical-data-box'] dl");
+    }
+    /**
+     * Heuristik-Fallback für den ehemaligen ".GOIOV fqe3L EevEz"-Block:
+     * sucht ein Geschwister-Element zur Beschreibung, das zusätzliche
+     * Texte enthält (Verkäufer-Hinweise etc.). Bei Layout-Änderung
+     * von mobile.de bleibt das Skript funktional.
+     */
+    function getZusatzEl() {
+        const desc = getDescriptionEl();
+        if (!desc) return null;
+        const candidate = desc.parentElement && desc.parentElement.nextElementSibling;
+        if (candidate && candidate.textContent && candidate.textContent.trim().length > 20) {
+            return candidate;
+        }
+        return null;
+    }
+
+    /**
+     * Heuristik: erkennt einen Beschreibungs-Block, der in Wahrheit eine
+     * Komma-getrennte Feature-Liste ist (typischer mobile.de-Block). Wenn
+     * ja, wird der Block als 'high' confidence eingestuft, sodass auch
+     * Einträge mit nurInFeatures: true ihn berücksichtigen.
+     */
+    function classifyDescription(rawText) {
+        if (!rawText) return 'low';
+        const items = rawText.split(/,/).map(s => s.trim()).filter(Boolean);
+        // Eindeutige Komma-Liste: viele Items → strukturierte Ausstattung.
+        if (items.length >= 12) return 'high';
+        if (items.length >= 6) {
+            // Anteil kurzer Items zählen statt nur Mittelwert (robuster gegen
+            // einzelne lange Items wie "Multi-Media-Interface MMI Navigation").
+            const shortRatio = items.filter(it => it.split(/\s+/).length <= 5).length / items.length;
+            if (shortRatio >= 0.6) return 'high';
+        }
+        return 'low';
+    }
+
+    /**
+     * Liefert eine Liste von Quellen mit confidence:
+     *   - features    -> high
+     *   - tech        -> high
+     *   - description -> high (wenn Komma-Liste) sonst low
+     *   - zusatz      -> low
+     */
+    function extractSources() {
+        const sources = [];
+
+        const featureItems = getFeatureItems();
+        if (featureItems.length > 0) {
+            const text = featureItems.map(li => li.textContent.trim()).filter(Boolean).join(' | ');
+            sources.push({ id: 'features', confidence: 'high', text, tokens: tokenize(text) });
+        }
+
+        const techDl = getTechDataDl();
+        if (techDl) {
+            const text = techDl.textContent.replace(/\s+/g, ' ').trim();
+            sources.push({ id: 'tech', confidence: 'high', text, tokens: tokenize(text) });
+        }
+
+        const desc = getDescriptionEl();
+        if (desc) {
+            const rawText = desc.textContent.replace(/\s+/g, ' ').trim();
+            const confidence = classifyDescription(rawText);
+            const text = rawText.replace(/,/g, ' ');
+            sources.push({ id: 'description', confidence, text, tokens: tokenize(text) });
+        }
+
+        const zusatz = getZusatzEl();
+        if (zusatz) {
+            const text = zusatz.textContent.trim();
+            sources.push({ id: 'zusatz', confidence: 'low', text, tokens: tokenize(text) });
+        }
+        return sources;
+    }
+
+    // ============================================================
+    // 7) Begriffs-Suche (ersetzt sucheBegriffe)
+    // ============================================================
+    function sucheBegriffe() {
+        const sources = extractSources();
+        if (sources.length === 0) return [];
+        const gefundene = [];
+
+        suchKonfigurationen.forEach(cfg => {
+            if (!cfg.aktiv) return;
+            if (!Array.isArray(cfg.begriffe) || cfg.begriffe.length === 0) return;
+
+            const onlyHigh = cfg.nurInFeatures === true;
+            const compound = cfg.compound === true;
+
+            for (const src of sources) {
+                if (onlyHigh && src.confidence !== 'high') continue;
+
+                let matched = false;
+                for (const begriff of cfg.begriffe) {
+                    const parts = tokenize(begriff);
+                    if (parts.length === 0) continue;
+                    const maxGap = getMaxWordGap(parts.length);
+                    const window = matchInTokens(src.tokens, parts, maxGap, compound);
+                    if (!window) continue;
+                    if (cfg.verboten && cfg.verboten.length > 0) {
+                        const forbiddenParts = cfg.verboten
+                            .map(v => cleanText(v))
+                            .filter(Boolean);
+                        if (isForbiddenInWindow(src.tokens, window, forbiddenParts)) {
+                            console.debug('Verbotenes Token im Fenster für', cfg.anzeige, '→ skip');
+                            continue;
+                        }
+                    }
+                    const snippetTokens = src.tokens.slice(
+                        Math.max(0, window.startIdx - 2),
+                        Math.min(src.tokens.length, window.endIdx + 3)
+                    );
+                    gefundene.push({
+                        anzeige: cfg.anzeige,
+                        farbe: (cfg.farbe || '#66ff66').toLowerCase(),
+                        source: src.id,
+                        confidence: src.confidence,
+                        snippet: snippetTokens.join(' '),
+                        begriff
+                    });
+                    matched = true;
+                    break;
+                }
+                if (matched) break;
+            }
+        });
+
+        // Dedup: gleiche anzeige nur einmal, dabei beste confidence behalten
+        const byAnzeige = new Map();
+        for (const item of gefundene) {
+            const existing = byAnzeige.get(item.anzeige);
+            if (!existing) { byAnzeige.set(item.anzeige, item); continue; }
+            const existingHigh = existing.confidence === 'high';
+            const itemHigh = item.confidence === 'high';
+            if (!existingHigh && itemHigh) byAnzeige.set(item.anzeige, item);
+        }
+        let unique = [...byAnzeige.values()];
+        unique.sort((a, b) => a.anzeige.localeCompare(b.anzeige));
+
+        // Substring-Dedup: kürzeren Eintrag entfernen, wenn ein längerer
+        // Eintrag existiert, der ALLE Tokens des kürzeren als komplette
+        // Tokens enthält (kein Prefix-Hack mehr).
+        unique = subsetDedup(unique);
+
+        // Generalisiertes Merging
+        unique = generalizedMergeEntries(unique, mergeGruppenConfig);
+
+        // Endgültige alphabetische Sortierung
+        unique.sort((a, b) => a.anzeige.localeCompare(b.anzeige));
+        console.debug('Gefundene Begriffe:', unique.map(i => `${i.anzeige} [${i.source}]`));
+        return unique;
+    }
+
+    function subsetDedup(entries) {
+        const tokenSets = entries.map(e => new Set(tokenize(e.anzeige)));
+        const result = [];
+        for (let i = 0; i < entries.length; i++) {
+            const a = tokenSets[i];
+            let dropped = false;
+            for (let j = 0; j < entries.length; j++) {
+                if (i === j) continue;
+                const b = tokenSets[j];
+                if (b.size <= a.size) continue;
+                let containsAll = true;
+                for (const t of a) {
+                    if (!b.has(t)) { containsAll = false; break; }
+                }
+                if (containsAll) { dropped = true; break; }
+            }
+            if (!dropped) result.push(entries[i]);
+        }
+        return result;
+    }
+
+    function generalizedMergeEntries(entries, gruppen) {
+        if (!Array.isArray(gruppen) || gruppen.length === 0) return entries;
+        let result = [...entries];
+        gruppen.forEach(group => {
+            if (!group || !group.basis) return;
+            const basis = group.basis.toLowerCase();
+            const order = (group.order || []).map(item => item.toLowerCase());
+            const matching = result.filter(e => e.anzeige.toLowerCase().includes(basis));
+            if (matching.length <= 1) return;
+            result = result.filter(e => !e.anzeige.toLowerCase().includes(basis));
+            let modifiers = matching
+                .map(e => e.anzeige.toLowerCase().replace(basis, '').trim())
+                .filter(Boolean);
+            modifiers = Array.from(new Set(modifiers));
+            modifiers.sort((a, b) => {
+                let ia = order.findIndex(key => a.includes(key.replace(/\./g, '').trim()));
+                let ib = order.findIndex(key => b.includes(key.replace(/\./g, '').trim()));
+                if (ia === -1) ia = 999;
+                if (ib === -1) ib = 999;
+                return ia - ib;
+            });
+            const basisCap = group.basis.charAt(0).toUpperCase() + group.basis.slice(1);
+            const merged = basisCap + (modifiers.length ? ' ' + modifiers.join(', ') : '');
+            // beste confidence der Gruppe übernehmen
+            const bestConf = matching.some(e => e.confidence === 'high') ? 'high' : 'low';
+            const sources = [...new Set(matching.map(e => e.source))].join(',');
+            result.push({
+                anzeige: merged,
+                farbe: matching[0].farbe,
+                source: sources,
+                confidence: bestConf
+            });
+        });
+        return result;
+    }
+
+    // ============================================================
+    // 8) Suche nach Technischen Daten
+    // ============================================================
+    function sucheTechnischeDaten() {
+        const techDataBereich = getTechDataDl();
+        if (!techDataBereich) return [];
+        const dtElements = techDataBereich.querySelectorAll('dt');
         const daten = [];
-        const dtElements = techDataBereich.querySelectorAll("dt");
-        console.debug('Debug: dtElements gefunden:', dtElements.length);
         techDataKonfigurationen.forEach(cfg => {
             if (!cfg.aktiv) return;
-            console.debug('Debug: Prüfe techDataKonfiguration für:', cfg.begriff, 'aktiv:', cfg.aktiv);
-            for (let dt of dtElements) {
-                const dtText = dt.textContent.trim();
-                console.debug('Debug: dtText:', dtText);
-                if (dtText.toLowerCase() === cfg.begriff.toLowerCase()) {
+            for (const dt of dtElements) {
+                if (dt.textContent.trim().toLowerCase() === cfg.begriff.toLowerCase()) {
                     const dd = dt.nextElementSibling;
                     if (dd && dd.tagName.toLowerCase() === 'dd') {
-                        console.debug('Debug: Übereinstimmung gefunden für:', cfg.begriff, 'Wert:', dd.textContent.trim());
                         daten.push({ title: cfg.begriff, value: dd.textContent.trim() });
                     }
                     break;
                 }
             }
         });
-        console.debug('Debug: Ergebnis von sucheTechnischeDaten:', daten);
         return daten;
     }
 
     function technischeDatenHinzufuegen(parentElement) {
         const technischeDaten = sucheTechnischeDaten();
-        console.debug('Debug: technischeDatenHinzufuegen, gefundene technische Daten:', technischeDaten);
         if (technischeDaten.length === 0) return;
         const techArticle = document.createElement('article');
-        techArticle.className = 'A3G6X lAeeF vTKPY HaBLt ku0Os';
-        techArticle.style.marginBottom = "10px";
+        techArticle.className = 'A3G6X lAeeF vTKPY HaBLt ku0Os mobilede-tech-article';
+        techArticle.style.marginBottom = '10px';
         const techContainer = document.createElement('div');
-        techContainer.style.border = "1px solid #8a2be2";
-        techContainer.style.padding = "10px";
-        techContainer.style.backgroundColor = "#1e1f24";
-        techContainer.style.color = "white";
-        techContainer.style.width = "100%";
-        techContainer.style.textAlign = "left";
-        techContainer.style.boxShadow = "0px 2px 4px rgba(0, 0, 0, 0.1)";
-        techContainer.style.fontSize = "14px";
-        techContainer.style.lineHeight = "1.5";
-        techContainer.style.display = "block";
+        Object.assign(techContainer.style, {
+            border: '1px solid #8a2be2',
+            padding: '10px',
+            backgroundColor: '#1e1f24',
+            color: 'white',
+            width: '100%',
+            textAlign: 'left',
+            boxShadow: '0px 2px 4px rgba(0, 0, 0, 0.1)',
+            fontSize: '14px',
+            lineHeight: '1.5',
+            display: 'block'
+        });
         const title = document.createElement('div');
-        title.textContent = "Technische Daten:";
-        title.style.color = "white";
-        title.style.marginBottom = "5px";
+        title.textContent = 'Technische Daten:';
+        title.style.color = 'white';
+        title.style.marginBottom = '5px';
         techContainer.appendChild(title);
         const table = document.createElement('table');
-        table.style.width = "100%";
-        table.style.borderCollapse = "collapse";
+        table.style.width = '100%';
+        table.style.borderCollapse = 'collapse';
         technischeDaten.forEach(d => {
             const tr = document.createElement('tr');
             const tdKey = document.createElement('td');
-            tdKey.textContent = d.title + ":";
-            tdKey.style.color = "white";
-            tdKey.style.paddingRight = "20px";
-            tdKey.style.whiteSpace = "nowrap";
-            tdKey.style.verticalAlign = "top";
+            tdKey.textContent = d.title + ':';
+            Object.assign(tdKey.style, { color: 'white', paddingRight: '20px', whiteSpace: 'nowrap', verticalAlign: 'top' });
             const tdValue = document.createElement('td');
             tdValue.textContent = d.value;
-            tdValue.style.color = "white";
-            tdValue.style.width = "100%";
-            tdValue.style.verticalAlign = "top";
+            Object.assign(tdValue.style, { color: 'white', width: '100%', verticalAlign: 'top' });
             tr.appendChild(tdKey);
             tr.appendChild(tdValue);
             table.appendChild(tr);
@@ -423,111 +580,190 @@
         parentElement.parentNode.insertBefore(techArticle, parentElement);
     }
 
-    // ***********************************************************************
-    // 7) Ergebnisse zusammenfassen
-    // ***********************************************************************
+    // ============================================================
+    // 9) Render: Ergebnis-Article einfügen
+    // ============================================================
     function ergebnisHinzufuegen() {
-        const gefundeneTexte = sucheBegriffe();
+        if (document.querySelector('#ergebnisBereich')) return;
         const zielBereich = document.querySelector("article[data-testid='vip-key-features-box']");
         if (!zielBereich) return;
-        if (document.querySelector("#ergebnisBereich")) return;
+
+        const gefundeneTexte = sucheBegriffe();
+
         const article = document.createElement('article');
-        article.className = 'A3G6X lAeeF vTKPY HaBLt ku0Os';
+        article.className = 'A3G6X lAeeF vTKPY HaBLt ku0Os mobilede-result-article';
         const ergebnisBereich = document.createElement('div');
-        ergebnisBereich.id = "ergebnisBereich";
-        ergebnisBereich.style.border = "1px solid #8a2be2";
-        ergebnisBereich.style.padding = "10px";
-        ergebnisBereich.style.marginTop = "10px";
-        ergebnisBereich.style.backgroundColor = "#1e1f24";
-        ergebnisBereich.style.color = "white";
-        ergebnisBereich.style.width = "100%";
-        ergebnisBereich.style.textAlign = "left";
-        ergebnisBereich.style.boxShadow = "0px 2px 4px rgba(0, 0, 0, 0.1)";
-        ergebnisBereich.style.fontSize = "14px";
-        ergebnisBereich.style.lineHeight = "1.5";
-        ergebnisBereich.style.display = "flex";
-        ergebnisBereich.style.flexWrap = "wrap";
+        ergebnisBereich.id = 'ergebnisBereich';
+        Object.assign(ergebnisBereich.style, {
+            border: '1px solid #8a2be2',
+            padding: '10px',
+            marginTop: '10px',
+            backgroundColor: '#1e1f24',
+            color: 'white',
+            width: '100%',
+            textAlign: 'left',
+            boxShadow: '0px 2px 4px rgba(0, 0, 0, 0.1)',
+            fontSize: '14px',
+            lineHeight: '1.5',
+            display: 'flex',
+            flexWrap: 'wrap'
+        });
         article.appendChild(ergebnisBereich);
+
         const title = document.createElement('div');
-        title.style.color = "white";
-        title.style.marginBottom = "5px";
+        title.style.color = 'white';
+        title.style.marginBottom = '5px';
         title.style.width = '100%';
         title.textContent = 'Gefundene Begriffe:';
         ergebnisBereich.appendChild(title);
+
         if (gefundeneTexte.length > 0) {
             gefundeneTexte.forEach(item => {
-                const textElement = document.createElement('div');
-                textElement.textContent = `- ${item.anzeige}`;
-                textElement.style.color = item.farbe;
-                textElement.style.width = '50%';
-                ergebnisBereich.appendChild(textElement);
+                const el = document.createElement('div');
+                const isLow = item.confidence === 'low';
+                el.style.width = '50%';
+                // Tooltip + Help-Cursor liegen NUR auf dem inneren Span,
+                // sodass der Cursor außerhalb des Textes normal bleibt.
+                const span = document.createElement('span');
+                span.textContent = `- ${item.anzeige}${isLow ? ' *' : ''}`;
+                span.style.color = item.farbe;
+                span.style.cursor = 'help';
+                const sourceLabel = isLow
+                    ? `Nur in Beschreibung gefunden (Quelle: ${item.source})`
+                    : `Quelle: ${item.source}`;
+                const trigger = item.begriff ? `\nTrigger: "${item.begriff}"` : '';
+                const snippet = item.snippet ? `\nKontext: …${item.snippet}…` : '';
+                span.title = sourceLabel + trigger + snippet;
+                if (isLow) {
+                    span.style.fontStyle = 'italic';
+                    span.style.opacity = '0.85';
+                }
+                el.appendChild(span);
+                ergebnisBereich.appendChild(el);
             });
+            const hasLow = gefundeneTexte.some(i => i.confidence === 'low');
+            if (hasLow) {
+                const legend = document.createElement('div');
+                legend.style.width = '100%';
+                legend.style.fontSize = '11px';
+                legend.style.opacity = '0.7';
+                legend.style.marginTop = '6px';
+                legend.textContent = '* = nur in Beschreibungstext gefunden (geringere Sicherheit)';
+                ergebnisBereich.appendChild(legend);
+            }
         } else {
-            const keineTexte = document.createElement('div');
-            keineTexte.textContent = "Keine der gesuchten Begriffe gefunden.";
-            keineTexte.style.color = "white";
-            ergebnisBereich.appendChild(keineTexte);
+            const keine = document.createElement('div');
+            keine.textContent = 'Keine der gesuchten Begriffe gefunden.';
+            keine.style.color = 'white';
+            ergebnisBereich.appendChild(keine);
         }
+
         zielBereich.parentNode.insertBefore(article, zielBereich.nextSibling);
         technischeDatenHinzufuegen(article);
     }
 
-    const observer = new MutationObserver(() => {
-        if (!document.querySelector("#ergebnisBereich")) {
-            setTimeout(ergebnisHinzufuegen, 1000);
-        }
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
-    setTimeout(ergebnisHinzufuegen, 2000);
+    function clearResults() {
+        document.querySelectorAll('.mobilede-result-article, .mobilede-tech-article').forEach(el => el.remove());
+    }
 
-    // ***********************************************************************
-    // 8) Popup-Fenster mit Import/Export & Konfiguration
-    // ***********************************************************************
+    // ============================================================
+    // 10) Lifecycle: Observer + SPA-Navigation
+    // ============================================================
+    let observer = null;
+    let triggerTimer = null;
+    function trigger() {
+        clearTimeout(triggerTimer);
+        triggerTimer = setTimeout(() => {
+            try { ergebnisHinzufuegen(); } catch (e) { console.error(e); }
+        }, 300);
+    }
+
+    function startObserver() {
+        if (observer) observer.disconnect();
+        // Wir lassen den Observer dauerhaft laufen; trigger() ist debounced
+        // und ergebnisHinzufuegen() bricht früh ab, wenn bereits eingefügt.
+        // Bei SPA-Re-Renders (DOM ohne URL-Wechsel) wird so neu gerendert.
+        observer = new MutationObserver(() => trigger());
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    let lastUrl = location.href;
+    function onUrlChange() {
+        if (location.href === lastUrl) return;
+        lastUrl = location.href;
+        clearResults();
+        startObserver();
+        trigger();
+        // Konfig-Button neu setzen, falls Parent re-rendered wurde
+        setTimeout(() => {
+            if (!document.querySelector('#mobilede-config-btn')) erstelleKonfigButton();
+        }, 1500);
+    }
+
+    window.addEventListener('popstate', onUrlChange);
+    window.addEventListener('hashchange', onUrlChange);
+    setInterval(onUrlChange, 1000);
+
+    startObserver();
+    trigger();
+
+    // ============================================================
+    // 11) Konfig-Popup
+    // ============================================================
     function oeffneKonfigPopup() {
+        if (document.querySelector('#mobilede-config-overlay')) return;
+
         let aktuelleAusstattungsKonfig = JSON.parse(JSON.stringify(suchKonfigurationen));
         let aktuelleTechKonfigurationen = JSON.parse(JSON.stringify(techDataKonfigurationen));
         let aktuelleMergeGruppen = JSON.parse(JSON.stringify(mergeGruppenConfig));
 
+        // Body-Scroll sperren, damit der mobile.de-Header nicht in den
+        // Sichtbereich rutscht und nichts verdeckt.
+        const prevBodyOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+
         const overlay = document.createElement('div');
-        overlay.style.position = 'fixed';
-        overlay.style.top = '0';
-        overlay.style.left = '0';
-        overlay.style.width = '100%';
-        overlay.style.height = '100%';
-        overlay.style.zIndex = '999999';
-        overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
-        overlay.style.opacity = '0';
-        overlay.style.transition = 'opacity 0.3s ease';
+        overlay.id = 'mobilede-config-overlay';
+        Object.assign(overlay.style, {
+            position: 'fixed', top: '0', left: '0', right: '0', bottom: '0',
+            width: '100vw', height: '100vh',
+            // Maximaler z-index, damit der sticky Header von mobile.de
+            // nicht über das Overlay rutscht.
+            zIndex: '2147483647',
+            backgroundColor: 'rgba(0, 0, 0, 0.85)', opacity: '0',
+            transition: 'opacity 0.3s ease',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: '24px',
+            boxSizing: 'border-box'
+        });
         document.body.appendChild(overlay);
 
-        function escListener(e) {
-            if (e.key === 'Escape') removeOverlay();
-        }
+        function escListener(e) { if (e.key === 'Escape') removeOverlay(); }
         document.addEventListener('keydown', escListener);
         function removeOverlay() {
             document.removeEventListener('keydown', escListener);
+            document.body.style.overflow = prevBodyOverflow;
             overlay.remove();
         }
+        // Klick auf den dunklen Hintergrund schließt das Popup.
+        overlay.addEventListener('click', e => {
+            if (e.target === overlay) removeOverlay();
+        });
 
         const popup = document.createElement('div');
-        popup.style.position = 'absolute';
-        popup.style.top = '50%';
-        popup.style.left = '50%';
-        popup.style.transform = 'translate(-50%, -50%)';
-        popup.style.zIndex = '2147483647';
-        popup.style.width = '80%';
-        popup.style.maxWidth = '900px';
-        popup.style.maxHeight = '80%';
-        popup.style.overflowY = 'auto';
-        popup.style.backgroundColor = '#2e2f35';
-        popup.style.color = '#fff';
-        popup.style.borderRadius = '10px';
-        popup.style.boxShadow = '0 4px 15px rgba(0, 0, 0, 0.6)';
-        popup.style.border = 'none';
-        popup.style.padding = '20px';
-        popup.style.fontFamily = 'Arial, sans-serif';
-        popup.style.opacity = '0';
-        popup.style.transition = 'opacity 0.3s ease';
+        Object.assign(popup.style, {
+            // Per Flex zentriert (nicht mehr per absolute/translate),
+            // dadurch ist Position immer im Viewport, egal wie der
+            // Header von mobile.de sich verhält.
+            position: 'relative',
+            width: '100%', maxWidth: '900px',
+            maxHeight: '100%',
+            overflowY: 'auto', backgroundColor: '#2e2f35', color: '#fff',
+            borderRadius: '10px', boxShadow: '0 4px 15px rgba(0, 0, 0, 0.6)',
+            border: 'none', padding: '20px', fontFamily: 'Arial, sans-serif',
+            opacity: '0', transition: 'opacity 0.3s ease',
+            boxSizing: 'border-box'
+        });
 
         const title = document.createElement('h2');
         title.textContent = 'Konfiguration';
@@ -535,7 +771,7 @@
         title.style.fontWeight = 'normal';
         popup.appendChild(title);
 
-        // A) AUSSTATTUNG EDITIEREN
+        // ===== A) Ausstattung =====
         const ausstattungTitle = document.createElement('h3');
         ausstattungTitle.textContent = 'Ausstattungs-Konfiguration';
         ausstattungTitle.style.borderBottom = '1px solid #444';
@@ -543,64 +779,137 @@
         ausstattungTitle.style.marginTop = '16px';
         popup.appendChild(ausstattungTitle);
 
+        const filterRow = document.createElement('div');
+        filterRow.style.display = 'flex';
+        filterRow.style.gap = '8px';
+        filterRow.style.margin = '8px 0';
+
+        const filterInput = document.createElement('input');
+        filterInput.type = 'text';
+        filterInput.placeholder = 'Filter (Anzeigetext oder Begriff)…';
+        Object.assign(filterInput.style, {
+            flex: '1', padding: '6px 8px', borderRadius: '4px',
+            border: '1px solid #555', background: '#3b3c42', color: '#fff'
+        });
+
+        const onlyActive = document.createElement('label');
+        onlyActive.style.display = 'flex';
+        onlyActive.style.alignItems = 'center';
+        onlyActive.style.gap = '4px';
+        const onlyActiveCb = document.createElement('input');
+        onlyActiveCb.type = 'checkbox';
+        onlyActive.appendChild(onlyActiveCb);
+        const onlyActiveSpan = document.createElement('span');
+        onlyActiveSpan.textContent = 'nur aktive';
+        onlyActive.appendChild(onlyActiveSpan);
+
+        filterRow.appendChild(filterInput);
+        filterRow.appendChild(onlyActive);
+        popup.appendChild(filterRow);
+
         const ausstattungContainer = document.createElement('div');
         popup.appendChild(ausstattungContainer);
 
-        // *** HIER Sortierung entfernt ***
-        function renderAusstattung() {
-            // KEINE automatische Sortim().localeCompare((b.anzeige || '').trim()));ierung mehr!
-            // aktuelleAusstattungsKonfig.sort((a, b) => (a.anzeige || '').tr
+        let draggedAusstattungIndex = null;
 
+        function ausstattungSichtbar(item) {
+            const f = filterInput.value.trim().toLowerCase();
+            if (onlyActiveCb.checked && !item.aktiv) return false;
+            if (!f) return true;
+            if ((item.anzeige || '').toLowerCase().includes(f)) return true;
+            if ((item.begriffe || []).some(b => b.toLowerCase().includes(f))) return true;
+            return false;
+        }
+
+        function renderAusstattung() {
             ausstattungContainer.innerHTML = '';
             aktuelleAusstattungsKonfig.forEach((item, index) => {
+                if (!ausstattungSichtbar(item)) return;
                 const divItem = document.createElement('div');
-                divItem.style.border = '1px solid #444';
-                divItem.style.borderRadius = '6px';
-                divItem.style.padding = '10px';
-                divItem.style.marginBottom = '8px';
-                divItem.style.backgroundColor = '#3b3c42';
+                Object.assign(divItem.style, {
+                    border: '1px solid #444', borderRadius: '6px',
+                    padding: '10px', marginBottom: '8px', backgroundColor: '#3b3c42',
+                    cursor: 'grab'
+                });
+                divItem.draggable = true;
+                divItem.addEventListener('dragstart', e => {
+                    draggedAusstattungIndex = index;
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', String(index));
+                });
+                divItem.addEventListener('dragover', e => e.preventDefault());
+                divItem.addEventListener('drop', e => {
+                    e.preventDefault();
+                    if (draggedAusstattungIndex === null || draggedAusstattungIndex === index) return;
+                    const moved = aktuelleAusstattungsKonfig[draggedAusstattungIndex];
+                    aktuelleAusstattungsKonfig.splice(draggedAusstattungIndex, 1);
+                    const insertAt = draggedAusstattungIndex < index ? index - 1 : index;
+                    aktuelleAusstattungsKonfig.splice(insertAt, 0, moved);
+                    draggedAusstattungIndex = null;
+                    renderAusstattung();
+                });
 
                 const row1 = document.createElement('div');
-                row1.style.display = 'flex';
-                row1.style.flexWrap = 'wrap';
-                row1.style.alignItems = 'center';
+                Object.assign(row1.style, { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' });
 
                 const checkAktiv = document.createElement('input');
-                checkAktiv.style.marginRight = '5px';
                 checkAktiv.type = 'checkbox';
                 checkAktiv.checked = item.aktiv === true;
                 checkAktiv.addEventListener('change', () => { item.aktiv = checkAktiv.checked; });
 
                 const lblAktiv = document.createElement('label');
-                lblAktiv.textContent = ' aktiv';
-                lblAktiv.style.marginRight = '10px';
+                lblAktiv.textContent = 'aktiv';
 
                 const inputAnzeige = document.createElement('input');
                 inputAnzeige.type = 'text';
-                inputAnzeige.value = item.anzeige;
+                inputAnzeige.value = item.anzeige || '';
                 inputAnzeige.placeholder = 'Anzeigetext';
-                inputAnzeige.style.flex = '1';
-                inputAnzeige.style.minWidth = '150px';
-                inputAnzeige.style.marginRight = '10px';
+                Object.assign(inputAnzeige.style, { flex: '1', minWidth: '150px' });
                 inputAnzeige.addEventListener('input', () => { item.anzeige = inputAnzeige.value; });
 
                 const inputFarbe = document.createElement('input');
                 inputFarbe.type = 'text';
                 inputFarbe.value = item.farbe || '';
                 inputFarbe.placeholder = '#66ff66';
-                inputFarbe.style.marginRight = '10px';
                 inputFarbe.style.width = '100px';
                 inputFarbe.addEventListener('input', () => { item.farbe = inputFarbe.value; });
 
+                const featuresOnlyLabel = document.createElement('label');
+                featuresOnlyLabel.style.display = 'flex';
+                featuresOnlyLabel.style.alignItems = 'center';
+                featuresOnlyLabel.style.gap = '4px';
+                featuresOnlyLabel.title = 'Treffer aus Beschreibungstext ignorieren (nur strukturierte Listen)';
+                const featuresOnlyCb = document.createElement('input');
+                featuresOnlyCb.type = 'checkbox';
+                featuresOnlyCb.checked = item.nurInFeatures === true;
+                featuresOnlyCb.addEventListener('change', () => { item.nurInFeatures = featuresOnlyCb.checked; });
+                featuresOnlyLabel.appendChild(featuresOnlyCb);
+                const featuresOnlyText = document.createElement('span');
+                featuresOnlyText.textContent = 'nur Features';
+                featuresOnlyText.style.fontSize = '11px';
+                featuresOnlyLabel.appendChild(featuresOnlyText);
+
+                const compoundLabel = document.createElement('label');
+                compoundLabel.style.display = 'flex';
+                compoundLabel.style.alignItems = 'center';
+                compoundLabel.style.gap = '4px';
+                compoundLabel.title = 'Substring an beliebiger Stelle erlauben (für deutsche Komposita)';
+                const compoundCb = document.createElement('input');
+                compoundCb.type = 'checkbox';
+                compoundCb.checked = item.compound === true;
+                compoundCb.addEventListener('change', () => { item.compound = compoundCb.checked; });
+                compoundLabel.appendChild(compoundCb);
+                const compoundText = document.createElement('span');
+                compoundText.textContent = 'compound';
+                compoundText.style.fontSize = '11px';
+                compoundLabel.appendChild(compoundText);
+
                 const btnLoeschen = document.createElement('button');
                 btnLoeschen.textContent = 'Löschen';
-                btnLoeschen.style.cursor = 'pointer';
-                btnLoeschen.style.padding = '4px 8px';
-                btnLoeschen.style.marginTop = '4px';
-                btnLoeschen.style.border = 'none';
-                btnLoeschen.style.borderRadius = '4px';
-                btnLoeschen.style.backgroundColor = '#a33';
-                btnLoeschen.style.color = '#fff';
+                Object.assign(btnLoeschen.style, {
+                    cursor: 'pointer', padding: '4px 8px', border: 'none',
+                    borderRadius: '4px', backgroundColor: '#a33', color: '#fff'
+                });
                 btnLoeschen.addEventListener('click', () => {
                     aktuelleAusstattungsKonfig.splice(index, 1);
                     renderAusstattung();
@@ -610,53 +919,66 @@
                 row1.appendChild(lblAktiv);
                 row1.appendChild(inputAnzeige);
                 row1.appendChild(inputFarbe);
+                row1.appendChild(featuresOnlyLabel);
+                row1.appendChild(compoundLabel);
                 row1.appendChild(btnLoeschen);
 
                 const txtBegriffe = document.createElement('textarea');
                 txtBegriffe.value = (item.begriffe || []).join(', ');
-                txtBegriffe.style.width = '100%';
-                txtBegriffe.style.height = '40px';
-                txtBegriffe.style.marginTop = '6px';
+                Object.assign(txtBegriffe.style, { width: '100%', height: '40px', marginTop: '6px' });
                 txtBegriffe.placeholder = 'Suchbegriffe, Komma-getrennt';
                 txtBegriffe.addEventListener('input', () => {
-                    item.begriffe = txtBegriffe.value.split(',').map(s => s.trim()).filter(s => s.length > 0);
+                    item.begriffe = txtBegriffe.value.split(',').map(s => s.trim()).filter(Boolean);
                 });
 
                 const txtVerboten = document.createElement('textarea');
                 txtVerboten.value = (item.verboten || []).join(', ');
-                txtVerboten.style.width = '100%';
-                txtVerboten.style.height = '30px';
-                txtVerboten.style.marginTop = '4px';
+                Object.assign(txtVerboten.style, { width: '100%', height: '30px', marginTop: '4px' });
                 txtVerboten.placeholder = 'Verbotene Wörter, Komma-getrennt';
                 txtVerboten.addEventListener('input', () => {
-                    item.verboten = txtVerboten.value.split(',').map(s => s.trim()).filter(s => s.length > 0);
+                    item.verboten = txtVerboten.value.split(',').map(s => s.trim()).filter(Boolean);
                 });
 
                 divItem.appendChild(row1);
                 divItem.appendChild(txtBegriffe);
                 divItem.appendChild(txtVerboten);
-
                 ausstattungContainer.appendChild(divItem);
             });
         }
         renderAusstattung();
+        filterInput.addEventListener('input', renderAusstattung);
+        onlyActiveCb.addEventListener('change', renderAusstattung);
 
         const btnNeuAusstattung = document.createElement('button');
         btnNeuAusstattung.textContent = 'Neuen Ausstattungseintrag hinzufügen';
-        btnNeuAusstattung.style.cursor = 'pointer';
-        btnNeuAusstattung.style.padding = '6px 10px';
-        btnNeuAusstattung.style.border = 'none';
-        btnNeuAusstattung.style.borderRadius = '4px';
-        btnNeuAusstattung.style.backgroundColor = '#4caf50';
-        btnNeuAusstattung.style.color = '#fff';
-        btnNeuAusstattung.style.marginTop = '8px';
+        Object.assign(btnNeuAusstattung.style, {
+            cursor: 'pointer', padding: '6px 10px', border: 'none',
+            borderRadius: '4px', backgroundColor: '#4caf50', color: '#fff',
+            marginTop: '8px', marginRight: '8px'
+        });
         btnNeuAusstattung.addEventListener('click', () => {
-            aktuelleAusstattungsKonfig.push({ begriffe: [], anzeige: '', farbe: '#66ff66', aktiv: true });
+            aktuelleAusstattungsKonfig.unshift({ begriffe: [], anzeige: '', farbe: '#66ff66', aktiv: true });
+            filterInput.value = '';
+            onlyActiveCb.checked = false;
             renderAusstattung();
         });
         popup.appendChild(btnNeuAusstattung);
 
-        // B) TECHNISCHE DATEN EDITIEREN
+        const btnResetAusstattung = document.createElement('button');
+        btnResetAusstattung.textContent = 'Standard wiederherstellen';
+        Object.assign(btnResetAusstattung.style, {
+            cursor: 'pointer', padding: '6px 10px', border: 'none',
+            borderRadius: '4px', backgroundColor: '#666', color: '#fff', marginTop: '8px'
+        });
+        btnResetAusstattung.addEventListener('click', () => {
+            if (!confirm('Ausstattungs-Konfiguration auf Defaults zurücksetzen? Aktueller Stand wird vorher gesichert.')) return;
+            speichereConfig(STORAGE_KEYS.backupPrefix + Date.now() + '_config', aktuelleAusstattungsKonfig);
+            aktuelleAusstattungsKonfig = JSON.parse(JSON.stringify(suchKonfigurationenDefault));
+            renderAusstattung();
+        });
+        popup.appendChild(btnResetAusstattung);
+
+        // ===== B) Tech =====
         const techTitle = document.createElement('h3');
         techTitle.textContent = 'Technische Daten-Konfiguration';
         techTitle.style.borderBottom = '1px solid #444';
@@ -672,77 +994,63 @@
             let draggedTechItemIndex = null;
             aktuelleTechKonfigurationen.forEach((item, index) => {
                 const divItem = document.createElement('div');
-                divItem.style.border = '1px solid #444';
-                divItem.style.borderRadius = '6px';
-                divItem.style.padding = '10px';
-                divItem.style.marginBottom = '8px';
-                divItem.style.backgroundColor = '#3b3c42';
-
+                Object.assign(divItem.style, {
+                    border: '1px solid #444', borderRadius: '6px',
+                    padding: '10px', marginBottom: '8px', backgroundColor: '#3b3c42',
+                    cursor: 'grab'
+                });
                 divItem.draggable = true;
                 divItem.addEventListener('dragstart', e => {
                     draggedTechItemIndex = index;
                     e.dataTransfer.setData('text/plain', '');
                     e.dataTransfer.effectAllowed = 'move';
                 });
-                divItem.addEventListener('dragover', e => { e.preventDefault(); });
+                divItem.addEventListener('dragover', e => e.preventDefault());
                 divItem.addEventListener('drop', e => {
                     e.preventDefault();
-                    const targetIndex = index;
-                    if (draggedTechItemIndex !== null && draggedTechItemIndex !== targetIndex) {
-                        const itemToMove = aktuelleTechKonfigurationen[draggedTechItemIndex];
-                        aktuelleTechKonfigurationen.splice(draggedTechItemIndex, 1);
-                        if (draggedTechItemIndex < targetIndex) {
-                            aktuelleTechKonfigurationen.splice(targetIndex - 1, 0, itemToMove);
-                        } else {
-                            aktuelleTechKonfigurationen.splice(targetIndex, 0, itemToMove);
-                        }
-                        renderTechData();
-                    }
+                    if (draggedTechItemIndex === null || draggedTechItemIndex === index) return;
+                    const moved = aktuelleTechKonfigurationen[draggedTechItemIndex];
+                    aktuelleTechKonfigurationen.splice(draggedTechItemIndex, 1);
+                    const insertAt = draggedTechItemIndex < index ? index - 1 : index;
+                    aktuelleTechKonfigurationen.splice(insertAt, 0, moved);
+                    draggedTechItemIndex = null;
+                    renderTechData();
                 });
 
-                const row1 = document.createElement('div');
-                row1.style.display = 'flex';
-                row1.style.flexWrap = 'wrap';
-                row1.style.alignItems = 'center';
+                const row = document.createElement('div');
+                Object.assign(row.style, { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' });
 
-                const checkAktiv = document.createElement('input');
-                checkAktiv.style.marginRight = '5px';
-                checkAktiv.type = 'checkbox';
-                checkAktiv.checked = item.aktiv === true;
-                checkAktiv.addEventListener('change', () => { item.aktiv = checkAktiv.checked; });
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.checked = item.aktiv === true;
+                cb.addEventListener('change', () => { item.aktiv = cb.checked; });
 
-                const lblAktiv = document.createElement('label');
-                lblAktiv.textContent = ' aktiv';
-                lblAktiv.style.marginRight = '10px';
+                const lbl = document.createElement('label');
+                lbl.textContent = 'aktiv';
 
-                const inputBegriff = document.createElement('input');
-                inputBegriff.type = 'text';
-                inputBegriff.value = item.begriff;
-                inputBegriff.placeholder = 'z.B. Fahrzeugzustand';
-                inputBegriff.style.flex = '1';
-                inputBegriff.style.minWidth = '200px';
-                inputBegriff.style.marginRight = '10px';
-                inputBegriff.addEventListener('input', () => { item.begriff = inputBegriff.value; });
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.value = item.begriff;
+                input.placeholder = 'z.B. Fahrzeugzustand';
+                Object.assign(input.style, { flex: '1', minWidth: '200px' });
+                input.addEventListener('input', () => { item.begriff = input.value; });
 
-                const btnLoeschenTech = document.createElement('button');
-                btnLoeschenTech.textContent = 'Löschen';
-                btnLoeschenTech.style.cursor = 'pointer';
-                btnLoeschenTech.style.padding = '4px 8px';
-                btnLoeschenTech.style.border = 'none';
-                btnLoeschenTech.style.borderRadius = '4px';
-                btnLoeschenTech.style.backgroundColor = '#a33';
-                btnLoeschenTech.style.color = '#fff';
-                btnLoeschenTech.addEventListener('click', () => {
+                const btnDel = document.createElement('button');
+                btnDel.textContent = 'Löschen';
+                Object.assign(btnDel.style, {
+                    cursor: 'pointer', padding: '4px 8px', border: 'none',
+                    borderRadius: '4px', backgroundColor: '#a33', color: '#fff'
+                });
+                btnDel.addEventListener('click', () => {
                     aktuelleTechKonfigurationen.splice(index, 1);
                     renderTechData();
                 });
 
-                row1.appendChild(checkAktiv);
-                row1.appendChild(lblAktiv);
-                row1.appendChild(inputBegriff);
-                row1.appendChild(btnLoeschenTech);
-
-                divItem.appendChild(row1);
+                row.appendChild(cb);
+                row.appendChild(lbl);
+                row.appendChild(input);
+                row.appendChild(btnDel);
+                divItem.appendChild(row);
                 techContainer.appendChild(divItem);
             });
         }
@@ -750,20 +1058,32 @@
 
         const btnNeuTech = document.createElement('button');
         btnNeuTech.textContent = 'Neuen Tech-Parameter hinzufügen';
-        btnNeuTech.style.cursor = 'pointer';
-        btnNeuTech.style.padding = '6px 10px';
-        btnNeuTech.style.border = 'none';
-        btnNeuTech.style.borderRadius = '4px';
-        btnNeuTech.style.backgroundColor = '#4caf50';
-        btnNeuTech.style.color = '#fff';
-        btnNeuTech.style.marginTop = '8px';
+        Object.assign(btnNeuTech.style, {
+            cursor: 'pointer', padding: '6px 10px', border: 'none',
+            borderRadius: '4px', backgroundColor: '#4caf50', color: '#fff',
+            marginTop: '8px', marginRight: '8px'
+        });
         btnNeuTech.addEventListener('click', () => {
             aktuelleTechKonfigurationen.push({ begriff: '', aktiv: true });
             renderTechData();
         });
         popup.appendChild(btnNeuTech);
 
-        // C) MERGE-GRUPPEN KONFIGURATION
+        const btnResetTech = document.createElement('button');
+        btnResetTech.textContent = 'Standard wiederherstellen';
+        Object.assign(btnResetTech.style, {
+            cursor: 'pointer', padding: '6px 10px', border: 'none',
+            borderRadius: '4px', backgroundColor: '#666', color: '#fff', marginTop: '8px'
+        });
+        btnResetTech.addEventListener('click', () => {
+            if (!confirm('Tech-Konfiguration auf Defaults zurücksetzen? Aktueller Stand wird vorher gesichert.')) return;
+            speichereConfig(STORAGE_KEYS.backupPrefix + Date.now() + '_techconfig', aktuelleTechKonfigurationen);
+            aktuelleTechKonfigurationen = JSON.parse(JSON.stringify(techDataKonfigurationenDefault));
+            renderTechData();
+        });
+        popup.appendChild(btnResetTech);
+
+        // ===== C) Merge-Gruppen =====
         const mergeTitle = document.createElement('h3');
         mergeTitle.textContent = 'Merge-Gruppen Konfiguration';
         mergeTitle.style.borderBottom = '1px solid #444';
@@ -776,50 +1096,44 @@
 
         function renderMergeConfig() {
             mergeContainer.innerHTML = '';
-            // Neue Gruppen bleiben unten, daher kein Sortieren an dieser Stelle
             aktuelleMergeGruppen.forEach((group, index) => {
                 const divGroup = document.createElement('div');
-                divGroup.style.border = '1px solid #444';
-                divGroup.style.borderRadius = '6px';
-                divGroup.style.padding = '10px';
-                divGroup.style.marginBottom = '8px';
-                divGroup.style.backgroundColor = '#3b3c42';
+                Object.assign(divGroup.style, {
+                    border: '1px solid #444', borderRadius: '6px',
+                    padding: '10px', marginBottom: '8px', backgroundColor: '#3b3c42',
+                    display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap'
+                });
 
                 const inputBasis = document.createElement('input');
                 inputBasis.type = 'text';
-                inputBasis.value = group.basis;
+                inputBasis.value = group.basis || '';
                 inputBasis.placeholder = 'Basis (z.B. außenspiegel)';
                 inputBasis.style.width = '40%';
-                inputBasis.style.marginRight = '10px';
                 inputBasis.addEventListener('input', () => { group.basis = inputBasis.value; });
 
                 const inputOrder = document.createElement('input');
                 inputOrder.type = 'text';
-                inputOrder.value = group.order.join(', ');
-                inputOrder.placeholder = 'Reihenfolge, Komma-getrennt (z.B. elektr. verstellbar, klappbar, auto. abblend.)';
-                inputOrder.style.width = '50%';
+                inputOrder.value = (group.order || []).join(', ');
+                inputOrder.placeholder = 'Reihenfolge, Komma-getrennt';
+                inputOrder.style.flex = '1';
                 inputOrder.addEventListener('input', () => {
-                    group.order = inputOrder.value.split(',').map(s => s.trim()).filter(s => s.length > 0);
+                    group.order = inputOrder.value.split(',').map(s => s.trim()).filter(Boolean);
                 });
 
-                const btnDeleteGroup = document.createElement('button');
-                btnDeleteGroup.textContent = 'Löschen';
-                btnDeleteGroup.style.cursor = 'pointer';
-                btnDeleteGroup.style.padding = '4px 8px';
-                btnDeleteGroup.style.marginTop = '4px';
-                btnDeleteGroup.style.border = 'none';
-                btnDeleteGroup.style.borderRadius = '4px';
-                btnDeleteGroup.style.backgroundColor = '#a33';
-                btnDeleteGroup.style.color = '#fff';
-                btnDeleteGroup.addEventListener('click', () => {
+                const btnDel = document.createElement('button');
+                btnDel.textContent = 'Löschen';
+                Object.assign(btnDel.style, {
+                    cursor: 'pointer', padding: '4px 8px', border: 'none',
+                    borderRadius: '4px', backgroundColor: '#a33', color: '#fff'
+                });
+                btnDel.addEventListener('click', () => {
                     aktuelleMergeGruppen.splice(index, 1);
                     renderMergeConfig();
                 });
 
                 divGroup.appendChild(inputBasis);
                 divGroup.appendChild(inputOrder);
-                divGroup.appendChild(btnDeleteGroup);
-
+                divGroup.appendChild(btnDel);
                 mergeContainer.appendChild(divGroup);
             });
         }
@@ -827,168 +1141,204 @@
 
         const btnNewMergeGroup = document.createElement('button');
         btnNewMergeGroup.textContent = 'Neue Merge-Gruppe hinzufügen';
-        btnNewMergeGroup.style.cursor = 'pointer';
-        btnNewMergeGroup.style.padding = '6px 10px';
-        btnNewMergeGroup.style.border = 'none';
-        btnNewMergeGroup.style.borderRadius = '4px';
-        btnNewMergeGroup.style.backgroundColor = '#4caf50';
-        btnNewMergeGroup.style.color = '#fff';
-        btnNewMergeGroup.style.marginTop = '8px';
+        Object.assign(btnNewMergeGroup.style, {
+            cursor: 'pointer', padding: '6px 10px', border: 'none',
+            borderRadius: '4px', backgroundColor: '#4caf50', color: '#fff',
+            marginTop: '8px', marginRight: '8px'
+        });
         btnNewMergeGroup.addEventListener('click', () => {
             aktuelleMergeGruppen.push({ basis: '', order: [] });
             renderMergeConfig();
         });
         popup.appendChild(btnNewMergeGroup);
 
-        // D) IMPORT / EXPORT
-        const importExportTitle = document.createElement('h3');
-        importExportTitle.textContent = 'Import / Export';
-        importExportTitle.style.borderBottom = '1px solid #444';
-        importExportTitle.style.paddingBottom = '4px';
-        importExportTitle.style.marginTop = '16px';
-        popup.appendChild(importExportTitle);
+        const btnResetMerge = document.createElement('button');
+        btnResetMerge.textContent = 'Standard wiederherstellen';
+        Object.assign(btnResetMerge.style, {
+            cursor: 'pointer', padding: '6px 10px', border: 'none',
+            borderRadius: '4px', backgroundColor: '#666', color: '#fff', marginTop: '8px'
+        });
+        btnResetMerge.addEventListener('click', () => {
+            if (!confirm('Merge-Gruppen auf Defaults zurücksetzen? Aktueller Stand wird vorher gesichert.')) return;
+            speichereConfig(STORAGE_KEYS.backupPrefix + Date.now() + '_mergeGruppen', aktuelleMergeGruppen);
+            aktuelleMergeGruppen = JSON.parse(JSON.stringify(mergeGruppenConfigDefault));
+            renderMergeConfig();
+        });
+        popup.appendChild(btnResetMerge);
 
-        const importExportContainer = document.createElement('div');
-        popup.appendChild(importExportContainer);
+        // ===== D) Import / Export =====
+        const ieTitle = document.createElement('h3');
+        ieTitle.textContent = 'Import / Export';
+        ieTitle.style.borderBottom = '1px solid #444';
+        ieTitle.style.paddingBottom = '4px';
+        ieTitle.style.marginTop = '16px';
+        popup.appendChild(ieTitle);
+
+        const ieContainer = document.createElement('div');
+        popup.appendChild(ieContainer);
 
         const exportLabel = document.createElement('div');
         exportLabel.textContent = 'Aktuelle Konfiguration (Export-JSON):';
         exportLabel.style.marginTop = '8px';
-        importExportContainer.appendChild(exportLabel);
+        ieContainer.appendChild(exportLabel);
 
         const exportArea = document.createElement('textarea');
-        exportArea.style.width = '100%';
-        exportArea.style.height = '100px';
-        exportArea.style.marginTop = '4px';
-        exportArea.style.backgroundColor = '#3b3c42';
-        exportArea.style.color = '#fff';
+        Object.assign(exportArea.style, {
+            width: '100%', height: '100px', marginTop: '4px',
+            backgroundColor: '#3b3c42', color: '#fff'
+        });
         exportArea.readOnly = true;
-        importExportContainer.appendChild(exportArea);
+        ieContainer.appendChild(exportArea);
 
         const btnGenerateExport = document.createElement('button');
         btnGenerateExport.textContent = 'Export aktualisieren';
-        btnGenerateExport.style.cursor = 'pointer';
-        btnGenerateExport.style.padding = '6px 10px';
-        btnGenerateExport.style.border = 'none';
-        btnGenerateExport.style.borderRadius = '4px';
-        btnGenerateExport.style.backgroundColor = '#333';
-        btnGenerateExport.style.color = '#fff';
-        btnGenerateExport.style.marginTop = '4px';
-        btnGenerateExport.style.marginRight = '10px';
+        Object.assign(btnGenerateExport.style, {
+            cursor: 'pointer', padding: '6px 10px', border: 'none',
+            borderRadius: '4px', backgroundColor: '#333', color: '#fff',
+            marginTop: '4px', marginRight: '10px'
+        });
         btnGenerateExport.addEventListener('click', () => {
-            const configObj = {
+            const obj = {
+                __version: SCHEMA_VERSION,
                 suchKonfigurationen: aktuelleAusstattungsKonfig,
                 techDataKonfigurationen: aktuelleTechKonfigurationen,
                 mergeGruppenConfig: aktuelleMergeGruppen
             };
-            exportArea.value = JSON.stringify(configObj, null, 2);
+            exportArea.value = JSON.stringify(obj, null, 2);
         });
-        importExportContainer.appendChild(btnGenerateExport);
+        ieContainer.appendChild(btnGenerateExport);
 
         const btnCopyExport = document.createElement('button');
         btnCopyExport.textContent = 'In Zwischenablage kopieren';
-        btnCopyExport.style.cursor = 'pointer';
-        btnCopyExport.style.padding = '6px 10px';
-        btnCopyExport.style.border = 'none';
-        btnCopyExport.style.borderRadius = '4px';
-        btnCopyExport.style.backgroundColor = '#555';
-        btnCopyExport.style.color = '#fff';
-        btnCopyExport.style.marginTop = '4px';
-        btnCopyExport.addEventListener('click', () => {
-            exportArea.select();
-            document.execCommand('copy');
+        Object.assign(btnCopyExport.style, {
+            cursor: 'pointer', padding: '6px 10px', border: 'none',
+            borderRadius: '4px', backgroundColor: '#555', color: '#fff', marginTop: '4px'
         });
-        importExportContainer.appendChild(btnCopyExport);
+        btnCopyExport.addEventListener('click', async () => {
+            const text = exportArea.value || '';
+            try {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    await navigator.clipboard.writeText(text);
+                } else {
+                    exportArea.select();
+                    document.execCommand('copy');
+                }
+                btnCopyExport.textContent = 'Kopiert!';
+                setTimeout(() => { btnCopyExport.textContent = 'In Zwischenablage kopieren'; }, 1200);
+            } catch (e) {
+                console.warn('Clipboard-Fehler:', e);
+                exportArea.select();
+                try { document.execCommand('copy'); } catch (_) {}
+            }
+        });
+        ieContainer.appendChild(btnCopyExport);
 
         const importLabel = document.createElement('div');
         importLabel.textContent = 'Konfiguration importieren (füge JSON hier ein):';
         importLabel.style.marginTop = '12px';
-        importExportContainer.appendChild(importLabel);
+        ieContainer.appendChild(importLabel);
 
         const importArea = document.createElement('textarea');
-        importArea.style.width = '100%';
-        importArea.style.height = '100px';
-        importArea.style.marginTop = '4px';
-        importArea.style.backgroundColor = '#3b3c42';
-        importArea.style.color = '#fff';
-        importExportContainer.appendChild(importArea);
+        Object.assign(importArea.style, {
+            width: '100%', height: '100px', marginTop: '4px',
+            backgroundColor: '#3b3c42', color: '#fff'
+        });
+        ieContainer.appendChild(importArea);
 
         const btnImport = document.createElement('button');
         btnImport.textContent = 'Import durchführen';
-        btnImport.style.cursor = 'pointer';
-        btnImport.style.padding = '6px 10px';
-        btnImport.style.border = 'none';
-        btnImport.style.borderRadius = '4px';
-        btnImport.style.backgroundColor = '#333';
-        btnImport.style.color = '#fff';
-        btnImport.style.marginTop = '4px';
+        Object.assign(btnImport.style, {
+            cursor: 'pointer', padding: '6px 10px', border: 'none',
+            borderRadius: '4px', backgroundColor: '#333', color: '#fff', marginTop: '4px'
+        });
         btnImport.addEventListener('click', () => {
             const text = importArea.value.trim();
             if (!text) return;
             try {
                 const obj = JSON.parse(text);
-                if (obj.suchKonfigurationen && Array.isArray(obj.suchKonfigurationen)) {
-                    aktuelleAusstattungsKonfig = obj.suchKonfigurationen;
-                }
-                if (obj.techDataKonfigurationen && Array.isArray(obj.techDataKonfigurationen)) {
-                    aktuelleTechKonfigurationen = obj.techDataKonfigurationen;
-                }
-                if (obj.mergeGruppenConfig && Array.isArray(obj.mergeGruppenConfig)) {
-                    aktuelleMergeGruppen = obj.mergeGruppenConfig;
-                }
+                // Backup vorher
+                const ts = Date.now();
+                speichereConfig(STORAGE_KEYS.backupPrefix + ts + '_config',      aktuelleAusstattungsKonfig);
+                speichereConfig(STORAGE_KEYS.backupPrefix + ts + '_techconfig',  aktuelleTechKonfigurationen);
+                speichereConfig(STORAGE_KEYS.backupPrefix + ts + '_mergeGruppen', aktuelleMergeGruppen);
+
+                if (Array.isArray(obj.suchKonfigurationen))     aktuelleAusstattungsKonfig    = obj.suchKonfigurationen;
+                if (Array.isArray(obj.techDataKonfigurationen)) aktuelleTechKonfigurationen   = obj.techDataKonfigurationen;
+                if (Array.isArray(obj.mergeGruppenConfig))      aktuelleMergeGruppen          = obj.mergeGruppenConfig;
                 renderAusstattung();
                 renderTechData();
                 renderMergeConfig();
-                alert('Import erfolgreich. Bitte ggf. noch "Speichern" klicken.');
+                alert('Import erfolgreich. Bitte ggf. noch "Speichern" klicken.\nBackup wurde erstellt mit Timestamp ' + ts);
             } catch (e) {
                 alert('Fehler beim Import. Ungültiges JSON?\n' + e);
             }
         });
-        importExportContainer.appendChild(btnImport);
+        ieContainer.appendChild(btnImport);
 
-        // E) BUTTON-BAR (SPEICHERN / ABBRECHEN)
+        // ===== E) Validierung-Anzeige =====
+        const validationBar = document.createElement('div');
+        validationBar.style.marginTop = '12px';
+        validationBar.style.fontSize = '12px';
+        validationBar.style.color = '#ffae42';
+        popup.appendChild(validationBar);
+
+        function validate() {
+            const issues = [];
+            const seenAnzeige = new Map();
+            aktuelleAusstattungsKonfig.forEach((item, idx) => {
+                if (!item.anzeige || !item.anzeige.trim()) issues.push(`Eintrag #${idx + 1}: leerer Anzeigetext.`);
+                if (!Array.isArray(item.begriffe) || item.begriffe.length === 0) issues.push(`"${item.anzeige || '(leer)'}": keine Begriffe.`);
+                const key = (item.anzeige || '').trim().toLowerCase();
+                if (key) {
+                    if (seenAnzeige.has(key)) issues.push(`Doppelte Anzeige: "${item.anzeige}"`);
+                    else seenAnzeige.set(key, idx);
+                }
+            });
+            return issues;
+        }
+
+        // ===== F) Save/Cancel =====
         const buttonBar = document.createElement('div');
         buttonBar.style.textAlign = 'right';
         buttonBar.style.marginTop = '20px';
 
         const cancelBtn = document.createElement('button');
         cancelBtn.textContent = 'Abbrechen';
-        cancelBtn.style.cursor = 'pointer';
-        cancelBtn.style.padding = '6px 10px';
-        cancelBtn.style.border = 'none';
-        cancelBtn.style.borderRadius = '4px';
-        cancelBtn.style.backgroundColor = '#555';
-        cancelBtn.style.color = '#fff';
-        cancelBtn.style.marginRight = '10px';
-        cancelBtn.addEventListener('click', () => { removeOverlay(); });
+        Object.assign(cancelBtn.style, {
+            cursor: 'pointer', padding: '6px 10px', border: 'none',
+            borderRadius: '4px', backgroundColor: '#555', color: '#fff', marginRight: '10px'
+        });
+        cancelBtn.addEventListener('click', removeOverlay);
 
         const saveBtn = document.createElement('button');
         saveBtn.textContent = 'Speichern';
-        saveBtn.style.cursor = 'pointer';
-        saveBtn.style.padding = '6px 10px';
-        saveBtn.style.border = 'none';
-        saveBtn.style.borderRadius = '4px';
-        saveBtn.style.backgroundColor = '#2196F3';
-        saveBtn.style.color = '#fff';
+        Object.assign(saveBtn.style, {
+            cursor: 'pointer', padding: '6px 10px', border: 'none',
+            borderRadius: '4px', backgroundColor: '#2196F3', color: '#fff'
+        });
         saveBtn.addEventListener('click', () => {
-            // Vor dem Speichern Ausstattungen alphabetisch sortieren:
-            aktuelleAusstattungsKonfig.sort((a, b) =>
-                (a.anzeige || '').trim().localeCompare((b.anzeige || '').trim())
-            );
+            const issues = validate();
+            if (issues.length > 0) {
+                if (!confirm('Es gibt Hinweise:\n\n' + issues.slice(0, 8).join('\n') + (issues.length > 8 ? `\n…und ${issues.length - 8} weitere` : '') + '\n\nTrotzdem speichern?')) {
+                    validationBar.textContent = issues.join(' • ');
+                    return;
+                }
+            }
+            aktuelleAusstattungsKonfig.sort((a, b) => (a.anzeige || '').trim().localeCompare((b.anzeige || '').trim()));
+            aktuelleMergeGruppen.sort((a, b) => (a.basis || '').localeCompare(b.basis || ''));
 
-            // Merge-Gruppen ebenfalls sortieren:
-            aktuelleMergeGruppen.sort((a, b) => a.basis.localeCompare(b.basis));
+            speichereConfig(STORAGE_KEYS.config, aktuelleAusstattungsKonfig);
+            speichereConfig(STORAGE_KEYS.techConfig, aktuelleTechKonfigurationen);
+            speichereConfig(STORAGE_KEYS.mergeGroups, aktuelleMergeGruppen);
+            speichereConfig(STORAGE_KEYS.version, SCHEMA_VERSION);
 
-            speichereConfig('mobilede_config', aktuelleAusstattungsKonfig);
-            speichereConfig('mobilede_techconfig', aktuelleTechKonfigurationen);
-            speichereConfig('mobilede_mergeGruppen', aktuelleMergeGruppen);
-
-            // Übernehmen in unsere globale Variablen:
             suchKonfigurationen = aktuelleAusstattungsKonfig;
             techDataKonfigurationen = aktuelleTechKonfigurationen;
             mergeGruppenConfig = aktuelleMergeGruppen;
 
             removeOverlay();
+            clearResults();
+            trigger();
         });
 
         buttonBar.appendChild(cancelBtn);
@@ -1002,26 +1352,31 @@
         });
     }
 
-    // ***********************************************************************
-    // 9) Konfig-Button einfügen
-    // ***********************************************************************
+    // ============================================================
+    // 12) Konfig-Button & Tampermonkey-Menü
+    // ============================================================
     function erstelleKonfigButton() {
-        const targetDiv = document.querySelector('.Va7Gr');
+        if (document.querySelector('#mobilede-config-btn')) return;
+        const targetDiv = document.querySelector('.Va7Gr')
+            || document.querySelector("article[data-testid='vip-key-features-box']");
         if (!targetDiv) return;
         const button = document.createElement('button');
+        button.id = 'mobilede-config-btn';
         button.innerText = 'Konfiguration';
-        button.style.cursor = 'pointer';
-        button.style.padding = '8px 12px';
-        button.style.border = 'none';
-        button.style.borderRadius = '4px';
-        button.style.background = '#333';
-        button.style.color = '#fff';
-        button.style.fontFamily = 'Arial, sans-serif';
-        button.style.boxShadow = '0px 2px 5px rgba(0,0,0,0.3)';
-        button.addEventListener('click', () => { oeffneKonfigPopup(); });
+        Object.assign(button.style, {
+            cursor: 'pointer', padding: '8px 12px', border: 'none',
+            borderRadius: '4px', background: '#333', color: '#fff',
+            fontFamily: 'Arial, sans-serif',
+            boxShadow: '0px 2px 5px rgba(0,0,0,0.3)'
+        });
+        button.addEventListener('click', oeffneKonfigPopup);
         targetDiv.appendChild(button);
     }
-
     setTimeout(erstelleKonfigButton, 3000);
 
+    if (typeof GM_registerMenuCommand === 'function') {
+        try {
+            GM_registerMenuCommand('Mobile.de Ausstattungssuche – Konfiguration', oeffneKonfigPopup);
+        } catch (e) { /* ignore */ }
+    }
 })();
