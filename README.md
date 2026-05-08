@@ -1,52 +1,54 @@
-Mobile.de Ausstattungssuche mit modernem Popup & Import/Export
+# Mobile.de Ausstattungssuche mit Popup & Import/Export
 
-Dieses Tampermonkey-Skript erweitert die Fahrzeugdetailseiten auf **mobile.de** um eine erweiterte Suchfunktion für Ausstattungsmerkmale und technische Daten. Mit einem Popup kannst du deine Suchkriterien verwalten, speichern und mit anderen teilen – dank der Import/Export-Funktion im JSON-Format.
+Tampermonkey-Skript für **mobile.de**-Fahrzeugdetailseiten: definierte **Ausstattungsbegriffe** und ausgewählte **Technische Daten** werden automatisch aus der Seite gewonnen, farbig dargestellt und über ein **Konfigurations-Popup** verwaltbar. Konfigurationen lassen sich per **Import/Export (JSON)** sichern oder teilen.
 
+## Funktionen
 
-Funktionen
+- Token-basierte Suche mit Wortgrenzen, optional **„Nur Ausstattungsliste“** und **„Wortteil-Suche“**.
+- Kombination angezeigter Treffer („Merge-Gruppen“, z.&nbsp;B. Außenspiegel-Zusammenfassung).
+- Zusätzliche **Tech-Daten**-Zeilen im Ergebnisbereich.
+- **SPA-tauglich** (Observer + gedrosseltes Nachladen nach DOM-/URL-Wechsel).
+- Unter **Konfiguration → Config**: z.&nbsp;B. **Standort als Google-Maps-Link** (PLZ/Stadt klickbar).
+- Popup mit Filter, Bulk-Aktionen, Drag-and-Drop, Undo, Hilfe-Tabs und Validierungshinweisen.
 
-- Automatische Suche nach definierten Ausstattungen und technischen Daten auf der Fahrzeugdetailseite.
-- Farbliche Hervorhebung der gefundenen Ausstattungen.
-- Anpassbare Suchkriterien direkt im Popup.
-- Import/Export der Konfigurationen im JSON-Format.
-- Anzeige technischer Daten in einem separaten Bereich.
+## Installation
 
+1. [Tampermonkey](https://www.tampermonkey.net/) (oder kompatibles Userscript-Manager-Add-on) installieren.
+2. Skriptdatei [`mobile-ausstattungssuche.js`](https://raw.githubusercontent.com/jxnxtxan/Mobile/main/mobile-ausstattungssuche.js) in Tampermonkey öffnen bzw. per „Neues Userscript aus URL …“ einbinden (`@updateURL` / `@downloadURL` zeigen darauf).
 
-Installation
+## Screenshots
 
-1. Tampermonkey installieren: https://www.tampermonkey.net/
-2. Skript installieren / Einfügen
+### Ergebnis auf der Detailseite
 
-Screenshots
+Über dem Aktionsbereich erscheinen der Block **„Technische Daten:“** und **„Gefundene Begriffe:“** mit farblicher Zuordnung (z.&nbsp;B. Ampel-/Prioritätsfarben wie im Skript eingestellt).
 
-1. Gefundene Ausstattungen auf der Fahrzeugseite  
-Die gefundenen Ausstattungen werden farblich hervorgehoben.
+![Technische Daten und gefundene Begriffe](./assets/ergebnis-techdaten.png)
 
-![Screenshot 2025-02-11 085510](https://github.com/user-attachments/assets/5ac93d13-398d-4135-ba11-21e21469ccc9)
+### Aktionsbereich mit Konfigurations-Button
 
+Der Button **Konfiguration** sitzt zusammen mit „E-Mail schreiben“, „Geparkt“ und „Teilen“ im typischen Aktionsbereich auf der rechten Spalte.
 
-2. Popup zur Konfiguration  
-Im Konfigurations-Popup kannst du deine Suchkriterien anpassen.
+![Aktionsbereich mit Button Konfiguration](./assets/aktionsbereich-konfiguration.png)
 
-![image](https://github.com/user-attachments/assets/340e6bea-47ce-470c-9d53-523387f0ee35)
-![image](https://github.com/user-attachments/assets/5e91129e-f2d5-45f4-aa1d-9edd9db5b051)
+### Popup: Ausstattung & weitere Tabs
 
+Filter, Schalter für jeden Eintrag, Farbwahl (Hex oder Schlüsselwort), Optionen „Nur Ausstattungsliste“ / „Wortteil-Suche“, aufklappbare **Details** (Suchbegriffe, Verbotene), sowie Tabs für Tech-Daten, Merge-Gruppen, Import/Export und einen Config-Tab.
 
-4. Import/Export der Konfigurationen  
-Einfache Verwaltung deiner Suchkriterien mit der Import/Export-Funktion.
+![Konfigurations-Popup, Tab Ausstattung](./assets/popup-ausstattung.png)
 
-![image](https://github.com/user-attachments/assets/c3da149a-97f6-4327-b6aa-6f4bbdf30760)
+### Popup: Config (Google Maps)
 
+Im Tab **Config** lassen sich erweiterbare Feature-Flags umschalten, z.&nbsp;B. anklickbare Standortzeilen (**Google Maps**).
 
-Anpassung der Suchkriterien
+![Konfigurations-Popup, Tab Config](./assets/popup-config-feature-flags.png)
 
-1. Klicke auf den Button Konfiguration auf der Fahrzeugseite.
-2. Füge neue Suchbegriffe hinzu, bearbeite bestehende oder lösche sie.
-3. Speichere deine Änderungen mit Speichern.
+## Suchkriterien anpassen
 
+1. Auf der Detailseite **Konfiguration** öffnen.
+2. Unter **Ausstattung** Begriffe, Anzeigetext und Optionen pflegen oder **Tech-Daten**, **Merge-Gruppen** und **Import/Export** nutzen.
+3. Mit **Speichern** dauerhaft in Tampermonkey-Speicher schreiben; **Abbrechen** verwirft Änderungen im aktuellen Dialog.
 
-Import/Export
+## Import / Export
 
-- Export: Klicke im Popup auf Export aktualisieren, um deine Konfiguration als JSON-Datei zu exportieren.
-- Import: Füge deine JSON-Konfiguration in das Feld ein und klicke auf Import durchführen.
-
+- **Export:** Im Popup **Export aktualisieren** – JSON ablegen oder kopieren.
+- **Import:** JSON ins Feld einfügen und **Import durchführen** bestätigen.
