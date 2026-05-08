@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mobile.de Ausstattungssuche mit modernem Popup & Import/Export (Generalisiertes Merging mit Merge-Konfiguration)
 // @namespace    http://tampermonkey.net/
-// @version      2.0.5
+// @version      2.1.14
 // @author       jxnxtxan
 // @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de. Token-basierte Match-Engine mit Wortgrenzen, Quellen-Gewichtung (Feature-Liste vs. Beschreibung), SPA-Robustheit, Konfig-Popup mit Filter, Drag&Drop, Reset, Backup und Schema-Versionierung.
 // @match        http://suchen.mobile.de/fahrzeuge/details.html*
@@ -776,6 +776,50 @@
     startObserver();
     trigger();
 
+    // Hilfe-Texte für Konfig-Popup (Tabs). Statisches HTML, nur innerHTML aus diesem Map.
+    const KONFIG_TAB_HELP_HTML = new Map([
+        ['aus', `
+<h4>Was macht das?</h4>
+<p>Hier konfigurierst du, welche Ausstattungsbegriffe (z.B. „Sitzheizung", „Panoramadach") auf einer mobile.de-Detailseite gesucht und im Ergebnis angezeigt werden.</p>
+<h4>So bedienst du es:</h4>
+<ul>
+<li><strong>Aktiv-Schalter (links)</strong>: Eintrag ein-/ausschalten. Inaktive werden ignoriert.</li>
+<li><strong>Anzeigetext</strong>: Wie der Treffer im Ergebnisbereich erscheint (z.B. „Sitzheizung").</li>
+<li><strong>Farbe</strong>: Hintergrundakzent im Ergebnis. Klick auf das Quadrat öffnet einen Color-Picker; alternativ Hex-Code (<code>#66ff66</code>) oder Schlüsselwort (<code>red</code>, <code>orange</code>).</li>
+<li><strong>Nur Ausstattungsliste</strong>: Treffer werden <strong>nur</strong> in der strukturierten Ausstattungsliste / Tech-Daten gezählt. Beschreibungstext wird ignoriert. Empfohlen für sicherheitskritische Begriffe wie „Anhängerkupplung" oder Sound-Systeme.</li>
+<li><strong>Wortteil-Suche</strong>: Erlaubt Treffer auch mitten in zusammengesetzten Wörtern (z.B. „heizung" findet „Standheizung"). Vorsicht: kann False-Positives erzeugen.</li>
+<li><strong>Details [N]</strong> öffnet erweiterte Optionen mit den eigentlichen Suchbegriffen und Verboten (Komma-getrennt).</li>
+<li><strong>Ziehen</strong> (links das ⋮⋮-Symbol) ändert die Reihenfolge im gespeicherten Konfig – hat keinen Einfluss auf das Ergebnis (das ist alphabetisch).</li>
+<li><strong>Bulk-Aktionen</strong> in der Toolbar wirken auf alle bzw. die aktuell sichtbaren Einträge nach Filter.</li>
+</ul>`],
+        ['tech', `
+<h4>Was macht das?</h4>
+<p>Hier wählst du, welche technischen Datenfelder (aus dem mobile.de-Tech-Daten-Block) zusätzlich im Ergebnis angezeigt werden, z.B. „Erstzulassung" oder „Fahrzeugzustand".</p>
+<h4>So bedienst du es:</h4>
+<ul>
+<li><strong>Aktiv-Schalter</strong> zum Ein-/Ausblenden.</li>
+<li><strong>Begriff</strong>: Muss exakt mit dem <code>&lt;dt&gt;</code>-Label aus dem mobile.de-Tech-Daten-Block übereinstimmen (Groß-/Kleinschreibung egal).</li>
+<li><strong>Bulk-Aktionen</strong> und <strong>Suche</strong> funktionieren wie auf der Ausstattungs-Seite.</li>
+<li><strong>Reihenfolge</strong> per Drag&amp;Drop ändert die Anzeigereihenfolge im Tech-Daten-Block.</li>
+</ul>`],
+        ['merge', `
+<h4>Was macht das?</h4>
+<p>Mehrere getrennt gefundene Einträge mit gleichem Basis-Wort werden zu <strong>einer</strong> Zeile zusammengefasst. Beispiel: „Außenspiegel beheizbar", „Außenspiegel anklappbar", „Außenspiegel elektr. verstellbar" → eine Zeile <strong>Außenspiegel beheizbar, anklappbar, elektr. verstellbar</strong>.</p>
+<h4>So bedienst du es:</h4>
+<ul>
+<li><strong>Basis</strong>: Das gemeinsame Wort, nach dem gruppiert wird (z.B. <code>außenspiegel</code>). Klein- und Großschreibung egal.</li>
+<li><strong>Reihenfolge</strong>: Komma-getrennte Liste der Modifizierer-Schlüsselwörter in der gewünschten Reihenfolge im zusammengefassten Eintrag (z.B. <code>elektr. verstellbar, beheizbar, anklappbar</code>). Treffer, die in keiner Reihenfolge auftauchen, kommen ans Ende.</li>
+</ul>`],
+        ['ie', `
+<h4>Was macht das?</h4>
+<p>Komplette Konfiguration als JSON sichern oder einspielen – praktisch zum Wechsel zwischen Browsern oder zum Verteilen einer Standardkonfiguration.</p>
+<h4>So bedienst du es:</h4>
+<ul>
+<li><strong>Export aktualisieren</strong> generiert das aktuelle JSON. <strong>Kopieren</strong> legt es in die Zwischenablage; <strong>Herunterladen</strong> speichert eine Datei <code>mobilede-config-YYYY-MM-DD.json</code>.</li>
+<li><strong>Import</strong>: JSON entweder per <strong>Drag&amp;Drop</strong> der Datei auf die Drop-Zone oder direkt in die Textarea einfügen. <strong>Importieren</strong> überschreibt die aktuelle Konfiguration; ein automatisches Backup wird vorher angelegt und kann per <strong>Rückgängig</strong> im Footer zurückgeholt werden.</li>
+</ul>`]
+    ]);
+
     // ============================================================
     // 11) Konfig-Popup
     // ============================================================
@@ -786,615 +830,1637 @@
         let aktuelleTechKonfigurationen = JSON.parse(JSON.stringify(techDataKonfigurationen));
         let aktuelleMergeGruppen = JSON.parse(JSON.stringify(mergeGruppenConfig));
 
-        // Body-Scroll sperren, damit der mobile.de-Header nicht in den
-        // Sichtbereich rutscht und nichts verdeckt.
+        let dirty = false;
+        let activeTabIndex = 0;
+        let draggedAusstattungIndex = null;
+        let draggedTechItemIndex = null;
+        const undoStack = [];
+        /** Max. eine Ausstattungs-Card mit geöffnetem Details-Panel — Array-Index in `aktuelleAusstattungsKonfig`. */
+        let expandedAusstattungIndex = null;
+        /** Hilfe-Panel je Tab (Ausstattung, Tech, Merge, Import/Export) — vermeidet Zustandsverlust beim Tab-Wechsel. */
+        const helpExpandedByTab = { aus: false, tech: false, merge: false, ie: false };
+        const SCRIPT_UI_VERSION = '2.1.14';
+
         const prevBodyOverflow = document.body.style.overflow;
         document.body.style.overflow = 'hidden';
 
+        function markDirty() { dirty = true; }
+
+        function injectStyles() {
+            if (document.getElementById('mobilede-config-style')) return;
+            const st = document.createElement('style');
+            st.id = 'mobilede-config-style';
+            st.textContent = `
+#mobilede-config-overlay.mc-overlay-root{
+  --mc-bg:#1a1b20;--mc-surface:#25262c;--mc-elevated:#32333a;--mc-border:#4a4b55;
+  --mc-text:#f2f3f5;--mc-muted:#aeb0ba;--mc-accent:#2196f3;--mc-danger:#e57373;
+  --mc-warn:#ffb74d;--mc-ok:#81c784;--mc-radius:10px;
+  --mc-bg-soft:rgba(255,255,255,.07);
+  backdrop-filter:blur(4px);
+  -webkit-backdrop-filter:blur(4px);
+}
+.mc-popup{
+  box-sizing:border-box;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+  color:var(--mc-text);background:var(--mc-surface);border-radius:var(--mc-radius);
+  width:100%;max-width:920px;height:88vh;max-height:calc(100vh - 32px);display:flex;flex-direction:column;
+  min-height:0;box-shadow:0 18px 50px rgba(0,0,0,.55);outline:none;
+}
+.mc-popup__head{
+  position:sticky;top:0;z-index:4;background:var(--mc-surface);
+  border-bottom:1px solid var(--mc-border);padding:14px 16px 0;
+}
+.mc-popup__head-row{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:8px;}
+.mc-popup__title{margin:0;font-size:19px;font-weight:600;line-height:1.2;}
+.mc-popup__ver{font-size:11px;color:var(--mc-muted);font-weight:400;margin-top:2px;}
+.mc-btn{
+  appearance:none;border:1px solid var(--mc-border);background:var(--mc-elevated);color:var(--mc-text);
+  border-radius:8px;padding:7px 12px;font-size:13px;cursor:pointer;line-height:1.2;display:inline-flex;align-items:center;gap:6px;
+}
+.mc-btn:disabled{opacity:.45;cursor:not-allowed;}
+.mc-btn:hover:not(:disabled){filter:brightness(1.06);}
+.mc-btn--primary{background:#1976d2;border-color:#1976d2;color:#fff;}
+.mc-btn--ghost{background:transparent;border-color:var(--mc-border);}
+.mc-btn--danger{background:rgba(229,115,115,.15);border-color:#c62828;color:#ffcdd2;}
+.mc-icon-btn{background:transparent;border:none;color:var(--mc-muted);padding:6px;cursor:pointer;border-radius:8px;line-height:0;}
+.mc-icon-btn:hover{color:#fff;background:var(--mc-elevated);}
+.mc-tabs-strip{
+  display:flex;flex-wrap:nowrap;gap:6px;margin-top:10px;margin-bottom:0;padding-bottom:10px;
+  overflow-x:auto;-webkit-overflow-scrolling:touch;
+}
+@media(max-width:699px){.mc-tabs-strip{scrollbar-width:thin}}
+.mc-tab{
+  flex-shrink:0;border:1px solid var(--mc-border);background:var(--mc-elevated);color:var(--mc-muted);
+  border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer;white-space:nowrap;
+}
+.mc-tab:focus{outline:2px solid var(--mc-accent);outline-offset:2px;}
+.mc-tab--active{border-color:#5c6bc0;background:#30334a;color:#fff;}
+.mc-tab-badge{opacity:.85;font-size:12px;margin-left:4px;}
+.mc-popup__scroll{flex:1;min-height:0;overflow-y:auto;padding:12px 16px 8px;}
+.mc-panel{display:none;flex-direction:column;min-height:0;gap:8px;height:100%;}
+.mc-panel--active{display:flex;}
+.mc-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:4px;padding:8px;
+  background:rgba(0,0,0,.12);border:1px solid var(--mc-border);border-radius:10px;}
+@media(max-width:699px){.mc-toolbar{flex-direction:column;align-items:stretch}}
+.mc-toolbar-meta{font-size:11px;color:var(--mc-muted);width:100%;}
+.mc-toolbar-help-slot{margin-left:auto;display:flex;align-items:center;flex-shrink:0;align-self:center;}
+.mc-toolbar__row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;width:100%;}
+.mc-toolbar__row--top{}
+.mc-toolbar__row--bottom{justify-content:space-between;}
+.mc-toolbar__row--bottom > .mc-btn--danger{margin-left:auto;}
+.mc-toolbar-toggle{display:inline-flex;align-items:center;gap:8px;padding:3px 14px 3px 5px;
+  background:rgba(255,255,255,.04);border:1px solid var(--mc-border);border-radius:999px;
+  font-size:13px;color:var(--mc-text);cursor:pointer;user-select:none;align-self:center;
+  transition:background .15s ease,border-color .15s ease;}
+.mc-toolbar-toggle:hover{background:rgba(255,255,255,.07);border-color:var(--mc-border-strong,#5a5d66);}
+.mc-toolbar-toggle:has(input:checked){background:rgba(25,118,210,.18);border-color:#1976d2;}
+.mc-toolbar-toggle > .mc-toggle{flex-shrink:0;}
+.mc-help-btn{min-width:36px;padding:7px 10px;justify-content:center;font-weight:600;}
+.mc-help-btn .mc-help-btn__q{font-size:15px;line-height:1;}
+.mc-help-panel{
+  box-sizing:border-box;width:100%;align-self:stretch;
+  max-height:0;overflow:hidden;transition:max-height .32s ease,opacity .2s ease,margin .2s ease;
+  opacity:0;margin:0;padding:0;border:1px solid transparent;border-radius:10px;background:transparent;
+}
+.mc-help-panel--open{
+  flex:0 0 auto;
+  max-height:min(70vh,720px);overflow-y:auto;opacity:1;margin-bottom:8px;
+  border-color:var(--mc-border);background:var(--mc-bg-soft);
+}
+.mc-help-panel__head{display:flex;justify-content:flex-end;align-items:center;padding:6px 8px 0;}
+.mc-help-panel__close{padding:4px;}
+.mc-help-panel__body{padding:4px 12px 12px;font-size:13px;line-height:1.45;color:var(--mc-text);}
+.mc-help-panel__body h4{margin:10px 0 6px;font-size:13px;font-weight:600;color:var(--mc-text);}
+.mc-help-panel__body h4:first-child{margin-top:0;}
+.mc-help-panel__body p{margin:0 0 8px;}
+.mc-help-panel__body ul{margin:0 0 4px;padding-left:20px;}
+.mc-help-panel__body li{margin:4px 0;}
+.mc-help-panel__body code{font-size:12px;background:rgba(0,0,0,.25);padding:1px 5px;border-radius:4px;}
+.mc-input,.mc-textarea,.mc-popup select{
+  border:1px solid var(--mc-border);background:var(--mc-elevated);color:var(--mc-text);border-radius:8px;font-size:13px;
+}
+.mc-input{padding:8px 10px;min-height:38px;}
+.mc-textarea{padding:8px 10px;resize:vertical;}
+.mc-searchbox{flex:1;min-width:160px;display:flex;align-items:center;gap:6px;border:1px solid var(--mc-border);
+  background:var(--mc-elevated);border-radius:8px;padding:2px 8px;}
+.mc-searchbox input{flex:1;border:none;background:transparent;color:var(--mc-text);padding:6px 4px;outline:none;}
+.mc-search-clear{border:none;background:transparent;color:var(--mc-muted);cursor:pointer;font-size:16px;line-height:1;padding:4px;}
+.mc-card{
+  border:1px solid var(--mc-border);border-radius:10px;background:var(--mc-elevated);
+  padding:10px;margin-bottom:6px;display:flex;flex-direction:column;gap:8px;
+}
+.mc-card--invalid{border-color:#e53935;}
+.mc-card__err{font-size:11px;color:#ffcdd2;margin:0;}
+.mc-card__main-row{display:flex;align-items:flex-start;gap:8px;}
+.mc-card__main-row--aus{align-items:center;flex-wrap:wrap;}
+.mc-card__main-row--tech{align-items:center;}
+.mc-card__main-row--tech > .mc-drag-handle,
+.mc-card__main-row--tech > .mc-toggle-wrap,
+.mc-card__main-row--tech > .mc-btn{
+  box-sizing:border-box;min-height:38px;
+}
+.mc-card__main-row--tech > .mc-drag-handle{display:inline-flex;align-items:center;}
+.mc-card__main-row--aus .mc-color-row input[type=color]{
+  height:38px;min-height:38px;box-sizing:border-box;width:46px;padding:3px;
+  flex-shrink:0;
+}
+.mc-card__main-row--aus .mc-pill{
+  box-sizing:border-box;min-height:38px;padding:6px 10px;font-size:12px;line-height:1.2;
+}
+.mc-drag-handle{
+  cursor:grab;user-select:none;touch-action:none;color:var(--mc-muted);font-size:15px;line-height:1.2;
+  padding:6px 4px;border-radius:6px;flex-shrink:0;
+}
+.mc-drag-handle:active{cursor:grabbing;}
+.mc-toggle-wrap{display:flex;align-items:center;gap:8px;flex-shrink:0;}
+.mc-toggle{position:relative;width:40px;height:22px;flex-shrink:0;}
+.mc-toggle input{opacity:0;width:0;height:0;}
+.mc-toggle span{
+  position:absolute;inset:0;background:#555;border-radius:999px;transition:background .2s;
+}
+.mc-toggle span::before{
+  content:'';position:absolute;height:16px;width:16px;left:3px;top:3px;background:#fff;border-radius:50%;transition:transform .2s;
+}
+.mc-toggle input:checked+span{background:#1976d2;}
+.mc-toggle input:checked+span::before{transform:translateX(18px);}
+.mc-card__header-line{display:flex;align-items:center;gap:10px;flex:1;min-width:0;}
+.mc-card__title-input{flex:1 1 auto;flex-shrink:1;min-width:120px;font-weight:600;font-size:15px;}
+.mc-card__title-input.inactive{opacity:.55;font-weight:500;}
+.mc-color-row{display:flex;align-items:center;gap:8px;flex-shrink:1;min-width:0;}
+.mc-card__main-row--aus .mc-color-row input.mc-color-hex-input{
+  width:88px;min-width:0;flex-shrink:1;transition:flex-basis .2s ease,width .2s ease;
+}
+.mc-card__main-row--aus:has(.mc-card__title-input:focus) .mc-color-row input.mc-color-hex-input{width:70px;}
+.mc-card__main-row--aus .mc-card__title-input.mc-input{
+  flex:1 1 auto;min-width:120px;
+  transition:flex-basis .2s ease,flex-grow .2s ease,flex-shrink .2s ease,width .2s ease;
+}
+.mc-card__main-row--aus:has(.mc-card__title-input:focus) .mc-card__header-line .mc-card__title-input.mc-input{
+  flex-grow:4;flex-basis:60%;
+}
+.mc-card__main-row--aus .mc-pill-row{min-width:0;flex-shrink:1;}
+.mc-card__main-row--aus:has(.mc-card__title-input:focus) .mc-pill-row{gap:4px;}
+.mc-pill-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
+.mc-pill{
+  display:inline-flex;align-items:center;gap:4px;border:1px solid var(--mc-border);border-radius:999px;
+  padding:4px 8px;font-size:12px;background:rgba(0,0,0,.15);cursor:pointer;user-select:none;
+}
+.mc-pill input{margin:0;}
+.mc-pill--on{border-color:#5c6bc0;background:#34374d;}
+.mc-info{font-size:12px;color:var(--mc-muted);cursor:help;}
+.mc-card__expand{
+  margin-left:auto;min-height:38px;padding:6px 14px;font-size:12px;gap:6px;font-weight:500;
+  flex-shrink:0;line-height:1.2;
+  background:rgba(255,255,255,.04);border-color:#5f6470;color:var(--mc-text);
+  transition:background .15s,border-color .15s,box-shadow .15s;
+}
+.mc-card__expand:hover{background:rgba(33,150,243,.14);border-color:var(--mc-accent);}
+.mc-card__expand:focus-visible{outline:2px solid var(--mc-accent);outline-offset:2px;box-shadow:0 0 0 3px rgba(33,150,243,.18);}
+.mc-card__expand-icon{display:inline-block;color:var(--mc-accent);transition:transform .18s ease;}
+.mc-card__expand[aria-expanded="true"] .mc-card__expand-icon{transform:rotate(180deg);}
+.mc-advanced{display:none;flex-direction:column;gap:6px;padding-top:4px;border-top:1px dashed var(--mc-border);}
+.mc-advanced--open{display:flex;}
+.mc-label-sm{font-size:11px;color:var(--mc-muted);}
+.mc-popup__foot{
+  position:sticky;bottom:0;z-index:4;background:linear-gradient(180deg,rgba(37,38,44,.2),var(--mc-surface) 18%);
+  border-top:1px solid var(--mc-border);padding:10px 16px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+}
+.mc-foot-left{flex:1;min-width:140px;display:flex;align-items:center;gap:8px;}
+.mc-foot-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto;}
+.mc-status-btn{border:none;background:transparent;padding:4px 6px;cursor:pointer;font-size:13px;border-radius:8px;text-align:left;}
+.mc-status-btn:hover{background:var(--mc-elevated);}
+.mc-status-ok{color:var(--mc-ok);}
+.mc-status-warn{color:var(--mc-warn);}
+.mc-issue-pop{
+  position:absolute;bottom:48px;left:16px;max-width:min(420px,90vw);max-height:40vh;overflow:auto;
+  background:var(--mc-elevated);border:1px solid var(--mc-border);border-radius:10px;padding:10px 12px;
+  font-size:12px;box-shadow:0 8px 30px rgba(0,0,0,.5);display:none;z-index:6;
+}
+.mc-issue-pop--open{display:block;}
+.mc-issue-pop ul{margin:6px 0 0 18px;padding:0;}
+.mc-toast-host{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:2147483647;display:flex;flex-direction:column;gap:8px;pointer-events:none;}
+.mc-toast{
+  pointer-events:auto;min-width:220px;max-width:min(92vw,420px);padding:10px 14px;border-radius:10px;
+  font-size:13px;box-shadow:0 8px 28px rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.12);
+}
+.mc-toast--success{background:#1b3a1f;color:#e8f5e9;}
+.mc-toast--warn{background:#3a2e1b;color:#ffe0b2;}
+.mc-toast--error{background:#3a1b1b;color:#ffcdd2;}
+.mc-modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:2147483646;display:flex;align-items:center;justify-content:center;padding:20px;}
+.mc-modal{background:var(--mc-surface);border:1px solid var(--mc-border);border-radius:12px;padding:16px 18px;max-width:420px;width:100%;color:var(--mc-text);}
+.mc-modal p{margin:0 0 14px;font-size:14px;line-height:1.45;white-space:pre-wrap;}
+.mc-modal-actions{display:flex;justify-content:flex-end;gap:8px;}
+.mc-row-ie{display:flex;gap:12px;flex-wrap:wrap;}
+.mc-ie-card{flex:1;min-width:260px;border:1px solid var(--mc-border);border-radius:10px;padding:12px;background:rgba(0,0,0,.12);}
+.mc-dropzone{
+  border:2px dashed var(--mc-border);border-radius:10px;padding:18px;text-align:center;font-size:13px;color:var(--mc-muted);
+  margin:8px 0;cursor:pointer;background:rgba(0,0,0,.12);
+}
+.mc-dropzone--hover{border-color:var(--mc-accent);color:var(--mc-text);}
+.mc-empty{padding:22px;text-align:center;color:var(--mc-muted);font-size:14px;border:1px dashed var(--mc-border);border-radius:10px;}
+`;
+            document.head.appendChild(st);
+        }
+        injectStyles();
+
+        function mkBtn(variant, label, onClick) {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'mc-btn' + (variant === 'primary' ? ' mc-btn--primary' : variant === 'ghost' ? ' mc-btn--ghost' : variant === 'danger' ? ' mc-btn--danger' : '');
+            b.textContent = label;
+            if (onClick) b.addEventListener('click', onClick);
+            return b;
+        }
+
+        function mkHelpPanel(htmlContent) {
+            const wrap = document.createElement('div');
+            wrap.className = 'mc-help-panel';
+            wrap.setAttribute('role', 'region');
+            const head = document.createElement('div');
+            head.className = 'mc-help-panel__head';
+            const closeBtn = document.createElement('button');
+            closeBtn.type = 'button';
+            closeBtn.className = 'mc-icon-btn mc-help-panel__close';
+            closeBtn.setAttribute('aria-label', 'Hilfe schließen');
+            closeBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.3 5.71a1 1 0 00-1.41 0L12 10.59 7.11 5.7A1 1 0 105.7 7.11L10.59 12 5.7 16.89a1 1 0 101.41 1.41L12 13.41l4.89 4.89a1 1 0 001.41-1.41L13.41 12l4.89-4.89a1 1 0 000-1.4z"/></svg>';
+            const body = document.createElement('div');
+            body.className = 'mc-help-panel__body';
+            body.innerHTML = htmlContent;
+            head.appendChild(closeBtn);
+            wrap.appendChild(head);
+            wrap.appendChild(body);
+            return { wrap, closeBtn };
+        }
+
+        function mkHelpButton(label) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'mc-btn mc-btn--ghost mc-help-btn';
+            btn.setAttribute('aria-label', label);
+            const q = document.createElement('span');
+            q.className = 'mc-help-btn__q';
+            q.setAttribute('aria-hidden', 'true');
+            q.textContent = '?';
+            btn.appendChild(q);
+            return btn;
+        }
+
+        function installKonfigTabHelp(tabKey, panelId, regionAriaLabel, btnLabel, toolbarEl, metaEl, panelColumn, beforeNode) {
+            const html = KONFIG_TAB_HELP_HTML.get(tabKey);
+            if (!html) return;
+            const { wrap, closeBtn } = mkHelpPanel(html);
+            wrap.id = panelId;
+            wrap.setAttribute('aria-label', regionAriaLabel);
+            const btn = mkHelpButton(btnLabel);
+            btn.setAttribute('aria-controls', panelId);
+            function applyHelpState() {
+                const o = helpExpandedByTab[tabKey];
+                btn.setAttribute('aria-expanded', o ? 'true' : 'false');
+                wrap.classList.toggle('mc-help-panel--open', o);
+            }
+            btn.addEventListener('click', () => {
+                helpExpandedByTab[tabKey] = !helpExpandedByTab[tabKey];
+                applyHelpState();
+            });
+            closeBtn.addEventListener('click', () => {
+                helpExpandedByTab[tabKey] = false;
+                applyHelpState();
+            });
+            const slot = document.createElement('div');
+            slot.className = 'mc-toolbar-help-slot';
+            slot.appendChild(btn);
+            if (metaEl) toolbarEl.insertBefore(slot, metaEl);
+            else toolbarEl.appendChild(slot);
+            panelColumn.insertBefore(wrap, beforeNode);
+            applyHelpState();
+        }
+
+        function mkToggle(checked, onChange) {
+            const lab = document.createElement('label');
+            lab.className = 'mc-toggle';
+            const inp = document.createElement('input');
+            inp.type = 'checkbox';
+            inp.checked = !!checked;
+            const span = document.createElement('span');
+            lab.appendChild(inp);
+            lab.appendChild(span);
+            inp.addEventListener('change', () => onChange(inp.checked));
+            return lab;
+        }
+
+        function namedColorToHex(name) {
+            const m = { orange: '#ff9800', red: '#f44336', green: '#4caf50', blue: '#2196f3', purple: '#9c27b0' };
+            const k = String(name || '').trim().toLowerCase();
+            return m[k] || '';
+        }
+
+        function normalizeHexColor(v) {
+            let s = String(v || '').trim();
+            if (/^#[0-9a-fA-F]{6}$/.test(s)) return s.toLowerCase();
+            const n = namedColorToHex(s);
+            return n || '#66ff66';
+        }
+
+        function mkColorInput(value, onChange) {
+            const wrap = document.createElement('div');
+            wrap.className = 'mc-color-row';
+            const hex = normalizeHexColor(value);
+            const colorInp = document.createElement('input');
+            colorInp.type = 'color';
+            colorInp.value = hex;
+            colorInp.className = 'mc-input';
+            const textInp = document.createElement('input');
+            textInp.type = 'text';
+            textInp.className = 'mc-input mc-color-hex-input';
+            textInp.value = value || '';
+            textInp.placeholder = '#66ff66';
+            function applyFromText() {
+                const h = normalizeHexColor(textInp.value);
+                colorInp.value = h;
+                onChange(textInp.value.trim());
+            }
+            function applyFromPicker() {
+                textInp.value = colorInp.value;
+                onChange(colorInp.value);
+            }
+            textInp.addEventListener('input', () => {
+                const h = normalizeHexColor(textInp.value);
+                colorInp.value = h;
+                onChange(textInp.value.trim());
+            });
+            colorInp.addEventListener('input', applyFromPicker);
+            wrap.appendChild(colorInp);
+            wrap.appendChild(textInp);
+            return wrap;
+        }
+
+        function mkDragHandle() {
+            const h = document.createElement('div');
+            h.className = 'mc-drag-handle';
+            h.textContent = '⋮⋮';
+            h.title = 'Ziehen zum Sortieren';
+            return h;
+        }
+
+        function mkSearchBox(placeholder, onInput) {
+            const box = document.createElement('div');
+            box.className = 'mc-searchbox';
+            const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            svg.setAttribute('width', '16');
+            svg.setAttribute('height', '16');
+            svg.setAttribute('viewBox', '0 0 24 24');
+            svg.style.opacity = '0.55';
+            const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            path.setAttribute('fill', 'currentColor');
+            path.setAttribute('d', 'M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z');
+            svg.appendChild(path);
+            const inp = document.createElement('input');
+            inp.type = 'search';
+            inp.placeholder = placeholder;
+            inp.autocomplete = 'off';
+            const clear = document.createElement('button');
+            clear.type = 'button';
+            clear.className = 'mc-search-clear';
+            clear.textContent = '×';
+            clear.title = 'Leeren';
+            clear.style.display = 'none';
+            function emit() { onInput(inp.value); }
+            inp.addEventListener('input', () => {
+                clear.style.display = inp.value ? 'block' : 'none';
+                emit();
+            });
+            clear.addEventListener('click', () => {
+                inp.value = '';
+                clear.style.display = 'none';
+                emit();
+            });
+            box.appendChild(svg);
+            box.appendChild(inp);
+            box.appendChild(clear);
+            box._input = inp;
+            return box;
+        }
+
+        function mkEmptyState(text) {
+            const d = document.createElement('div');
+            d.className = 'mc-empty';
+            d.textContent = text;
+            return d;
+        }
+
         const overlay = document.createElement('div');
         overlay.id = 'mobilede-config-overlay';
+        overlay.className = 'mc-overlay-root';
         Object.assign(overlay.style, {
             position: 'fixed', top: '0', left: '0', right: '0', bottom: '0',
-            width: '100vw', height: '100vh',
-            // Maximaler z-index, damit der sticky Header von mobile.de
-            // nicht über das Overlay rutscht.
-            zIndex: '2147483647',
-            backgroundColor: 'rgba(0, 0, 0, 0.85)', opacity: '0',
-            transition: 'opacity 0.3s ease',
+            width: '100vw', height: '100vh', zIndex: '2147483647',
+            backgroundColor: 'rgba(0, 0, 0, 0.72)', opacity: '0',
+            transition: 'opacity 0.25s ease',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            padding: '24px',
-            boxSizing: 'border-box'
+            padding: '16px', boxSizing: 'border-box'
         });
         document.body.appendChild(overlay);
 
-        function escListener(e) { if (e.key === 'Escape') removeOverlay(); }
+        const toastHost = document.createElement('div');
+        toastHost.className = 'mc-toast-host';
+        overlay.appendChild(toastHost);
+
+        function showToast(msg, kind) {
+            const t = document.createElement('div');
+            t.className = 'mc-toast mc-toast--' + (kind === 'success' ? 'success' : kind === 'warn' ? 'warn' : 'error');
+            t.textContent = msg;
+            toastHost.appendChild(t);
+            setTimeout(() => {
+                t.style.opacity = '0';
+                t.style.transition = 'opacity .35s';
+                setTimeout(() => t.remove(), 400);
+            }, 3200);
+        }
+
+        function confirmAsync(msg) {
+            return new Promise(resolve => {
+                const back = document.createElement('div');
+                back.className = 'mc-modal-backdrop';
+                const modal = document.createElement('div');
+                modal.className = 'mc-modal';
+                const p = document.createElement('p');
+                p.textContent = msg;
+                const row = document.createElement('div');
+                row.className = 'mc-modal-actions';
+                const no = mkBtn('ghost', 'Abbrechen', () => { back.remove(); resolve(false); });
+                const yes = mkBtn('primary', 'Bestätigen', () => { back.remove(); resolve(true); });
+                row.appendChild(no);
+                row.appendChild(yes);
+                modal.appendChild(p);
+                modal.appendChild(row);
+                back.appendChild(modal);
+                overlay.appendChild(back);
+                yes.focus();
+            });
+        }
+
+        function escListener(e) {
+            if (e.key === 'Escape') tryCloseFromUser();
+        }
         document.addEventListener('keydown', escListener);
+
         function removeOverlay() {
             document.removeEventListener('keydown', escListener);
             document.body.style.overflow = prevBodyOverflow;
             overlay.remove();
         }
-        // Klick auf den dunklen Hintergrund schließt das Popup.
+
+        function tryCloseFromUser() {
+            if (dirty) {
+                showToast('Ungespeicherte Änderungen – bitte Speichern oder Abbrechen.', 'warn');
+                return;
+            }
+            removeOverlay();
+        }
+
         overlay.addEventListener('click', e => {
-            if (e.target === overlay) removeOverlay();
+            if (e.target === overlay) tryCloseFromUser();
         });
+
+        function pushUndo(entry) {
+            if (undoStack.length >= 10) undoStack.shift();
+            undoStack.push(entry);
+            syncUndoBtn();
+        }
+
+        function snapshotAus() { return JSON.parse(JSON.stringify(aktuelleAusstattungsKonfig)); }
+        function snapshotTech() { return JSON.parse(JSON.stringify(aktuelleTechKonfigurationen)); }
+        function snapshotMerge() { return JSON.parse(JSON.stringify(aktuelleMergeGruppen)); }
+
+        let undoBtnRef = null;
+        function syncUndoBtn() {
+            if (undoBtnRef) undoBtnRef.disabled = undoStack.length === 0;
+        }
+
+        function performUndo() {
+            const u = undoStack.pop();
+            if (!u) return;
+            if (u.kind === 'all') {
+                aktuelleAusstattungsKonfig = u.aus;
+                aktuelleTechKonfigurationen = u.tech;
+                aktuelleMergeGruppen = u.merge;
+            } else if (u.kind === 'ausstattung') aktuelleAusstattungsKonfig = u.data;
+            else if (u.kind === 'tech') aktuelleTechKonfigurationen = u.data;
+            else if (u.kind === 'merge') aktuelleMergeGruppen = u.data;
+            renderAusstattung();
+            renderTechData();
+            renderMergeConfig();
+            refreshExportArea();
+            refreshValidationUI();
+            updateTabBadges();
+            showToast('Letzte Änderung rückgängig gemacht', 'success');
+            syncUndoBtn();
+        }
 
         const popup = document.createElement('div');
-        Object.assign(popup.style, {
-            // Per Flex zentriert (nicht mehr per absolute/translate),
-            // dadurch ist Position immer im Viewport, egal wie der
-            // Header von mobile.de sich verhält.
-            position: 'relative',
-            width: '100%', maxWidth: '900px',
-            maxHeight: '100%',
-            overflowY: 'auto', backgroundColor: '#2e2f35', color: '#fff',
-            borderRadius: '10px', boxShadow: '0 4px 15px rgba(0, 0, 0, 0.6)',
-            border: 'none', padding: '20px', fontFamily: 'Arial, sans-serif',
-            opacity: '0', transition: 'opacity 0.3s ease',
-            boxSizing: 'border-box'
-        });
+        popup.className = 'mc-popup';
+        popup.tabIndex = -1;
 
+        const head = document.createElement('div');
+        head.className = 'mc-popup__head';
+        const headRow = document.createElement('div');
+        headRow.className = 'mc-popup__head-row';
+        const titleBlock = document.createElement('div');
         const title = document.createElement('h2');
+        title.className = 'mc-popup__title';
         title.textContent = 'Konfiguration';
-        title.style.marginTop = '0';
-        title.style.fontWeight = 'normal';
-        popup.appendChild(title);
+        const ver = document.createElement('div');
+        ver.className = 'mc-popup__ver';
+        ver.textContent = 'Skript v' + SCRIPT_UI_VERSION + ' · Schema ' + SCHEMA_VERSION;
+        titleBlock.appendChild(title);
+        titleBlock.appendChild(ver);
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'mc-icon-btn';
+        closeBtn.setAttribute('aria-label', 'Schließen');
+        closeBtn.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M18.3 5.71a1 1 0 00-1.41 0L12 10.59 7.11 5.7A1 1 0 105.7 7.11L10.59 12 5.7 16.89a1 1 0 101.41 1.41L12 13.41l4.89 4.89a1 1 0 001.41-1.41L13.41 12l4.89-4.89a1 1 0 000-1.4z"/></svg>';
+        closeBtn.addEventListener('click', tryCloseFromUser);
+        headRow.appendChild(titleBlock);
+        headRow.appendChild(closeBtn);
+        head.appendChild(headRow);
 
-        // ===== A) Ausstattung =====
-        const ausstattungTitle = document.createElement('h3');
-        ausstattungTitle.textContent = 'Ausstattungs-Konfiguration';
-        ausstattungTitle.style.borderBottom = '1px solid #444';
-        ausstattungTitle.style.paddingBottom = '4px';
-        ausstattungTitle.style.marginTop = '16px';
-        popup.appendChild(ausstattungTitle);
+        const tabStrip = document.createElement('div');
+        tabStrip.className = 'mc-tabs-strip';
+        tabStrip.setAttribute('role', 'tablist');
+        head.appendChild(tabStrip);
 
-        const filterRow = document.createElement('div');
-        filterRow.style.display = 'flex';
-        filterRow.style.gap = '8px';
-        filterRow.style.margin = '8px 0';
+        const scroll = document.createElement('div');
+        scroll.className = 'mc-popup__scroll';
 
-        const filterInput = document.createElement('input');
-        filterInput.type = 'text';
-        filterInput.placeholder = 'Filter (Anzeigetext oder Begriff)…';
-        Object.assign(filterInput.style, {
-            flex: '1', padding: '6px 8px', borderRadius: '4px',
-            border: '1px solid #555', background: '#3b3c42', color: '#fff'
+        const panelAus = document.createElement('div');
+        panelAus.className = 'mc-panel mc-panel--active';
+        panelAus.setAttribute('role', 'tabpanel');
+        const panelTech = document.createElement('div');
+        panelTech.className = 'mc-panel';
+        panelTech.setAttribute('role', 'tabpanel');
+        const panelMerge = document.createElement('div');
+        panelMerge.className = 'mc-panel';
+        const panelIE = document.createElement('div');
+        panelIE.className = 'mc-panel';
+
+        scroll.appendChild(panelAus);
+        scroll.appendChild(panelTech);
+        scroll.appendChild(panelMerge);
+        scroll.appendChild(panelIE);
+
+        const footWrap = document.createElement('div');
+        footWrap.style.position = 'relative';
+        const issuePop = document.createElement('div');
+        issuePop.className = 'mc-issue-pop';
+        const foot = document.createElement('div');
+        foot.className = 'mc-popup__foot';
+        const footLeft = document.createElement('div');
+        footLeft.className = 'mc-foot-left';
+        const statusBtn = document.createElement('button');
+        statusBtn.type = 'button';
+        statusBtn.className = 'mc-status-btn mc-status-ok';
+        statusBtn.textContent = '✔ Alles ok';
+        const footRight = document.createElement('div');
+        footRight.className = 'mc-foot-right';
+        const undoBtn = mkBtn('ghost', 'Rückgängig', () => performUndo());
+        undoBtn.disabled = true;
+        undoBtnRef = undoBtn;
+        const cancelBtn = mkBtn('ghost', 'Abbrechen', () => removeOverlay());
+        const saveBtn = mkBtn('primary', 'Speichern', null);
+
+        footLeft.appendChild(statusBtn);
+        footRight.appendChild(undoBtn);
+        footRight.appendChild(cancelBtn);
+        footRight.appendChild(saveBtn);
+        foot.appendChild(footLeft);
+        foot.appendChild(footRight);
+        footWrap.appendChild(issuePop);
+        footWrap.appendChild(foot);
+
+        popup.appendChild(head);
+        popup.appendChild(scroll);
+        popup.appendChild(footWrap);
+
+        overlay.appendChild(popup);
+
+        const tabButtons = [];
+        function mkTab(label, idx) {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'mc-tab' + (idx === 0 ? ' mc-tab--active' : '');
+            b.setAttribute('role', 'tab');
+            b.setAttribute('aria-selected', idx === 0 ? 'true' : 'false');
+            b.dataset.tabIndex = String(idx);
+            const spanMain = document.createElement('span');
+            spanMain.textContent = label;
+            const badge = document.createElement('span');
+            badge.className = 'mc-tab-badge';
+            b.appendChild(spanMain);
+            b.appendChild(badge);
+            b.addEventListener('click', () => setActiveTab(idx));
+            tabStrip.appendChild(b);
+            tabButtons.push({ btn: b, badge, labelSpan: spanMain });
+            return badge;
+        }
+        mkTab('Ausstattung', 0);
+        mkTab('Tech-Daten', 1);
+        mkTab('Merge-Gruppen', 2);
+        mkTab('Import / Export', 3);
+
+        const panels = [panelAus, panelTech, panelMerge, panelIE];
+
+        function setActiveTab(idx) {
+            activeTabIndex = idx;
+            tabButtons.forEach((t, i) => {
+                const on = i === idx;
+                t.btn.classList.toggle('mc-tab--active', on);
+                t.btn.setAttribute('aria-selected', on ? 'true' : 'false');
+            });
+            panels.forEach((p, i) => p.classList.toggle('mc-panel--active', i === idx));
+            tabButtons[idx].btn.focus();
+        }
+
+        tabStrip.addEventListener('keydown', e => {
+            if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                setActiveTab((activeTabIndex + 1) % panels.length);
+            } else if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                setActiveTab((activeTabIndex + panels.length - 1) % panels.length);
+            }
         });
 
-        const onlyActive = document.createElement('label');
-        onlyActive.style.display = 'flex';
-        onlyActive.style.alignItems = 'center';
-        onlyActive.style.gap = '4px';
-        const onlyActiveCb = document.createElement('input');
-        onlyActiveCb.type = 'checkbox';
-        onlyActive.appendChild(onlyActiveCb);
-        const onlyActiveSpan = document.createElement('span');
-        onlyActiveSpan.textContent = 'nur aktive';
-        onlyActive.appendChild(onlyActiveSpan);
+        /** --- Ausstattung --- */
+        const ausToolbar = document.createElement('div');
+        ausToolbar.className = 'mc-toolbar';
+        const ausMeta = document.createElement('div');
+        ausMeta.className = 'mc-toolbar-meta';
+        const ausSearch = mkSearchBox('Filter (Anzeigetext oder Begriff)…', () => { renderAusstattung(); });
+        const onlyWrap = document.createElement('label');
+        onlyWrap.className = 'mc-toolbar-toggle';
+        onlyWrap.title = 'Nur aktive Einträge anzeigen';
+        const onlyToggle = mkToggle(false, () => { renderAusstattung(); });
+        const onlyCb = onlyToggle.querySelector('input');
+        onlyWrap.appendChild(onlyToggle);
+        const onlyTxt = document.createElement('span');
+        onlyTxt.textContent = 'nur aktive';
+        onlyWrap.appendChild(onlyTxt);
+        const bulkAllOn = mkBtn('ghost', 'Alle ein', () => bulkAusAlle(true));
+        const bulkAllOff = mkBtn('ghost', 'Alle aus', () => bulkAusAlle(false));
+        const bulkVisOn = mkBtn('ghost', 'Sichtbare ein', () => bulkAusSichtbar(true));
+        const bulkVisOff = mkBtn('ghost', 'Sichtbare aus', () => bulkAusSichtbar(false));
+        const btnNeuAus = mkBtn('primary', '+ Neu', () => {
+            aktuelleAusstattungsKonfig.unshift({ begriffe: [], anzeige: '', farbe: '#66ff66', aktiv: true });
+            ausSearch._input.value = '';
+            onlyCb.checked = false;
+            markDirty();
+            renderAusstattung();
+            showToast('Neuer Ausstattungseintrag', 'success');
+        });
+        const btnResetAus = mkBtn('danger', 'Reset Defaults', async () => {
+            const ok = await confirmAsync('Ausstattungs-Konfiguration auf Defaults zurücksetzen? Aktueller Stand wird vorher gesichert.');
+            if (!ok) return;
+            pushUndo({ kind: 'ausstattung', data: snapshotAus() });
+            speichereConfig(STORAGE_KEYS.backupPrefix + Date.now() + '_config', aktuelleAusstattungsKonfig);
+            aktuelleAusstattungsKonfig = JSON.parse(JSON.stringify(suchKonfigurationenDefault));
+            markDirty();
+            renderAusstattung();
+            showToast('Ausstattung auf Standard zurückgesetzt (Backup angelegt)', 'success');
+        });
+        const ausTopRow = document.createElement('div');
+        ausTopRow.className = 'mc-toolbar__row mc-toolbar__row--top';
+        ausTopRow.appendChild(ausSearch);
+        ausTopRow.appendChild(bulkAllOn);
+        ausTopRow.appendChild(bulkAllOff);
+        ausTopRow.appendChild(bulkVisOn);
+        ausTopRow.appendChild(bulkVisOff);
+        ausTopRow.appendChild(btnNeuAus);
 
-        filterRow.appendChild(filterInput);
-        filterRow.appendChild(onlyActive);
-        popup.appendChild(filterRow);
+        const ausBottomRow = document.createElement('div');
+        ausBottomRow.className = 'mc-toolbar__row mc-toolbar__row--bottom';
+        ausBottomRow.appendChild(onlyWrap);
+        ausBottomRow.appendChild(btnResetAus);
+
+        ausToolbar.appendChild(ausTopRow);
+        ausToolbar.appendChild(ausBottomRow);
+        ausToolbar.appendChild(ausMeta);
 
         const ausstattungContainer = document.createElement('div');
-        popup.appendChild(ausstattungContainer);
-
-        let draggedAusstattungIndex = null;
+        panelAus.appendChild(ausToolbar);
+        panelAus.appendChild(ausstattungContainer);
+        installKonfigTabHelp('aus', 'mc-konfig-help-aus', 'Hilfe zum Tab Ausstattung', 'Hilfe zu Ausstattung', ausTopRow, null, panelAus, ausstattungContainer);
 
         function ausstattungSichtbar(item) {
-            const f = filterInput.value.trim().toLowerCase();
-            if (onlyActiveCb.checked && !item.aktiv) return false;
+            const f = ausSearch._input.value.trim().toLowerCase();
+            if (onlyCb.checked && !item.aktiv) return false;
             if (!f) return true;
             if ((item.anzeige || '').toLowerCase().includes(f)) return true;
-            if ((item.begriffe || []).some(b => b.toLowerCase().includes(f))) return true;
+            if ((item.begriffe || []).some(b => String(b).toLowerCase().includes(f))) return true;
             return false;
         }
 
-        function renderAusstattung() {
-            ausstattungContainer.innerHTML = '';
-            aktuelleAusstattungsKonfig.forEach((item, index) => {
-                if (!ausstattungSichtbar(item)) return;
-                const divItem = document.createElement('div');
-                Object.assign(divItem.style, {
-                    border: '1px solid #444', borderRadius: '6px',
-                    padding: '10px', marginBottom: '8px', backgroundColor: '#3b3c42',
-                    cursor: 'grab'
-                });
-                divItem.draggable = true;
-                divItem.addEventListener('dragstart', e => {
-                    draggedAusstattungIndex = index;
-                    e.dataTransfer.effectAllowed = 'move';
-                    e.dataTransfer.setData('text/plain', String(index));
-                });
-                divItem.addEventListener('dragover', e => e.preventDefault());
-                divItem.addEventListener('drop', e => {
-                    e.preventDefault();
-                    if (draggedAusstattungIndex === null || draggedAusstattungIndex === index) return;
-                    const moved = aktuelleAusstattungsKonfig[draggedAusstattungIndex];
-                    aktuelleAusstattungsKonfig.splice(draggedAusstattungIndex, 1);
-                    const insertAt = draggedAusstattungIndex < index ? index - 1 : index;
-                    aktuelleAusstattungsKonfig.splice(insertAt, 0, moved);
-                    draggedAusstattungIndex = null;
-                    renderAusstattung();
-                });
+        function countAusaktiv() {
+            const t = aktuelleAusstattungsKonfig.length;
+            const a = aktuelleAusstattungsKonfig.filter(i => i.aktiv).length;
+            return { a, t };
+        }
 
-                const row1 = document.createElement('div');
-                Object.assign(row1.style, { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' });
+        function getVisibleAusIndices() {
+            const ix = [];
+            aktuelleAusstattungsKonfig.forEach((item, idx) => {
+                if (ausstattungSichtbar(item)) ix.push(idx);
+            });
+            return ix;
+        }
 
-                const checkAktiv = document.createElement('input');
-                checkAktiv.type = 'checkbox';
-                checkAktiv.checked = item.aktiv === true;
-                checkAktiv.addEventListener('change', () => { item.aktiv = checkAktiv.checked; });
+        function bulkAusAlle(flag) {
+            pushUndo({ kind: 'ausstattung', data: snapshotAus() });
+            aktuelleAusstattungsKonfig.forEach(i => { i.aktiv = flag; });
+            markDirty();
+            renderAusstattung();
+            showToast(flag ? 'Alle Einträge aktiviert' : 'Alle Einträge deaktiviert', 'success');
+        }
 
-                const lblAktiv = document.createElement('label');
-                lblAktiv.textContent = 'aktiv';
+        function bulkAusSichtbar(flag) {
+            const vis = getVisibleAusIndices();
+            if (vis.length === 0) {
+                showToast('Keine sichtbaren Einträge', 'warn');
+                return;
+            }
+            pushUndo({ kind: 'ausstattung', data: snapshotAus() });
+            vis.forEach(ix => { aktuelleAusstattungsKonfig[ix].aktiv = flag; });
+            markDirty();
+            renderAusstattung();
+            showToast('Sichtbare Einträge ' + (flag ? 'aktiviert' : 'deaktiviert'), 'success');
+        }
 
-                const inputAnzeige = document.createElement('input');
-                inputAnzeige.type = 'text';
-                inputAnzeige.value = item.anzeige || '';
-                inputAnzeige.placeholder = 'Anzeigetext';
-                Object.assign(inputAnzeige.style, { flex: '1', minWidth: '150px' });
-                inputAnzeige.addEventListener('input', () => { item.anzeige = inputAnzeige.value; });
+        function cardIssuesAus(idx, item) {
+            const errs = [];
+            if (!item.anzeige || !item.anzeige.trim()) errs.push('Anzeigetext fehlt');
+            if (!Array.isArray(item.begriffe) || item.begriffe.length === 0) errs.push('Keine Suchbegriffe');
+            const key = (item.anzeige || '').trim().toLowerCase();
+            if (key) {
+                const dup = aktuelleAusstattungsKonfig.findIndex((other, j) =>
+                    j !== idx && (other.anzeige || '').trim().toLowerCase() === key);
+                if (dup !== -1) errs.push('Doppelter Anzeigetext');
+            }
+            return errs;
+        }
 
-                const inputFarbe = document.createElement('input');
-                inputFarbe.type = 'text';
-                inputFarbe.value = item.farbe || '';
-                inputFarbe.placeholder = '#66ff66';
-                inputFarbe.style.width = '100px';
-                inputFarbe.addEventListener('input', () => { item.farbe = inputFarbe.value; });
+        function sanitizeExpandedAusstattungIndex() {
+            if (expandedAusstattungIndex === null) return;
+            const n = aktuelleAusstattungsKonfig.length;
+            if (!Number.isInteger(expandedAusstattungIndex) || expandedAusstattungIndex < 0 ||
+                expandedAusstattungIndex >= n) {
+                expandedAusstattungIndex = null;
+            }
+        }
 
-                const featuresOnlyLabel = document.createElement('label');
-                featuresOnlyLabel.style.display = 'flex';
-                featuresOnlyLabel.style.alignItems = 'center';
-                featuresOnlyLabel.style.gap = '4px';
-                featuresOnlyLabel.title = 'Treffer aus Beschreibungstext ignorieren (nur strukturierte Listen)';
-                const featuresOnlyCb = document.createElement('input');
-                featuresOnlyCb.type = 'checkbox';
-                featuresOnlyCb.checked = item.nurInFeatures === true;
-                featuresOnlyCb.addEventListener('change', () => { item.nurInFeatures = featuresOnlyCb.checked; });
-                featuresOnlyLabel.appendChild(featuresOnlyCb);
-                const featuresOnlyText = document.createElement('span');
-                featuresOnlyText.textContent = 'nur Features';
-                featuresOnlyText.style.fontSize = '11px';
-                featuresOnlyLabel.appendChild(featuresOnlyText);
-
-                const compoundLabel = document.createElement('label');
-                compoundLabel.style.display = 'flex';
-                compoundLabel.style.alignItems = 'center';
-                compoundLabel.style.gap = '4px';
-                compoundLabel.title = 'Substring an beliebiger Stelle erlauben (für deutsche Komposita)';
-                const compoundCb = document.createElement('input');
-                compoundCb.type = 'checkbox';
-                compoundCb.checked = item.compound === true;
-                compoundCb.addEventListener('change', () => { item.compound = compoundCb.checked; });
-                compoundLabel.appendChild(compoundCb);
-                const compoundText = document.createElement('span');
-                compoundText.textContent = 'compound';
-                compoundText.style.fontSize = '11px';
-                compoundLabel.appendChild(compoundText);
-
-                const btnLoeschen = document.createElement('button');
-                btnLoeschen.textContent = 'Löschen';
-                Object.assign(btnLoeschen.style, {
-                    cursor: 'pointer', padding: '4px 8px', border: 'none',
-                    borderRadius: '4px', backgroundColor: '#a33', color: '#fff'
-                });
-                btnLoeschen.addEventListener('click', () => {
-                    aktuelleAusstattungsKonfig.splice(index, 1);
-                    renderAusstattung();
-                });
-
-                row1.appendChild(checkAktiv);
-                row1.appendChild(lblAktiv);
-                row1.appendChild(inputAnzeige);
-                row1.appendChild(inputFarbe);
-                row1.appendChild(featuresOnlyLabel);
-                row1.appendChild(compoundLabel);
-                row1.appendChild(btnLoeschen);
-
-                const txtBegriffe = document.createElement('textarea');
-                txtBegriffe.value = (item.begriffe || []).join(', ');
-                Object.assign(txtBegriffe.style, { width: '100%', height: '40px', marginTop: '6px' });
-                txtBegriffe.placeholder = 'Suchbegriffe, Komma-getrennt';
-                txtBegriffe.addEventListener('input', () => {
-                    item.begriffe = txtBegriffe.value.split(',').map(s => s.trim()).filter(Boolean);
-                });
-
-                const txtVerboten = document.createElement('textarea');
-                txtVerboten.value = (item.verboten || []).join(', ');
-                Object.assign(txtVerboten.style, { width: '100%', height: '30px', marginTop: '4px' });
-                txtVerboten.placeholder = 'Verbotene Wörter, Komma-getrennt';
-                txtVerboten.addEventListener('input', () => {
-                    item.verboten = txtVerboten.value.split(',').map(s => s.trim()).filter(Boolean);
-                });
-
-                divItem.appendChild(row1);
-                divItem.appendChild(txtBegriffe);
-                divItem.appendChild(txtVerboten);
-                ausstattungContainer.appendChild(divItem);
+        function applyAusAccordionStateToAusCards() {
+            sanitizeExpandedAusstattungIndex();
+            ausstattungContainer.querySelectorAll('.mc-card').forEach(card => {
+                const ci = parseInt(card.dataset.cfgIndex, 10);
+                const item = aktuelleAusstattungsKonfig[ci];
+                if (!item) return;
+                const panel = card.querySelector('.mc-advanced');
+                const eb = card.querySelector('.mc-card__expand');
+                const mainLab = eb && eb.querySelector('.mc-card__expand-main');
+                const isOpen = expandedAusstattungIndex !== null && expandedAusstattungIndex === ci;
+                if (panel) panel.classList.toggle('mc-advanced--open', isOpen);
+                const nPart = Array.isArray(item.begriffe) ? item.begriffe.length : 0;
+                const vPart = Array.isArray(item.verboten) ? item.verboten.length : 0;
+                const begriffeW = nPart === 1 ? 'Begriff' : 'Begriffe';
+                const verboteW = vPart === 1 ? 'Verbot' : 'Verbote';
+                if (eb) {
+                    eb.setAttribute('aria-expanded', String(isOpen));
+                    eb.title = 'Details anzeigen / verbergen — ' + nPart + ' ' + begriffeW + ', ' + vPart + ' ' + verboteW;
+                    eb.setAttribute('aria-label',
+                        (isOpen
+                            ? 'Details-Bereich verbergen. Blendet die Felder für Suchbegriffe und verbotene Wörter aus.'
+                            : 'Details-Bereich anzeigen. Öffnet die Felder zum Bearbeiten von Suchbegriffen und verbotenen Wörtern.') +
+                        ' Aktuell ' + nPart + ' ' + begriffeW + ' und ' + vPart + ' ' + verboteW + '.');
+                }
+                if (mainLab) mainLab.textContent = 'Details [' + nPart + ']';
             });
         }
-        renderAusstattung();
-        filterInput.addEventListener('input', renderAusstattung);
-        onlyActiveCb.addEventListener('change', renderAusstattung);
 
-        const btnNeuAusstattung = document.createElement('button');
-        btnNeuAusstattung.textContent = 'Neuen Ausstattungseintrag hinzufügen';
-        Object.assign(btnNeuAusstattung.style, {
-            cursor: 'pointer', padding: '6px 10px', border: 'none',
-            borderRadius: '4px', backgroundColor: '#4caf50', color: '#fff',
-            marginTop: '8px', marginRight: '8px'
-        });
-        btnNeuAusstattung.addEventListener('click', () => {
-            aktuelleAusstattungsKonfig.unshift({ begriffe: [], anzeige: '', farbe: '#66ff66', aktiv: true });
-            filterInput.value = '';
-            onlyActiveCb.checked = false;
-            renderAusstattung();
-        });
-        popup.appendChild(btnNeuAusstattung);
+        function reorderExpandedAusAfterDrop(from, to) {
+            if (expandedAusstattungIndex === null) return;
+            const insertAt = from < to ? to - 1 : to;
+            if (expandedAusstattungIndex === from) {
+                expandedAusstattungIndex = insertAt;
+                return;
+            }
+            let e = expandedAusstattungIndex;
+            if (from < e) e--;
+            if (insertAt <= e) e++;
+            expandedAusstattungIndex = e;
+        }
 
-        const btnResetAusstattung = document.createElement('button');
-        btnResetAusstattung.textContent = 'Standard wiederherstellen';
-        Object.assign(btnResetAusstattung.style, {
-            cursor: 'pointer', padding: '6px 10px', border: 'none',
-            borderRadius: '4px', backgroundColor: '#666', color: '#fff', marginTop: '8px'
-        });
-        btnResetAusstattung.addEventListener('click', () => {
-            if (!confirm('Ausstattungs-Konfiguration auf Defaults zurücksetzen? Aktueller Stand wird vorher gesichert.')) return;
-            speichereConfig(STORAGE_KEYS.backupPrefix + Date.now() + '_config', aktuelleAusstattungsKonfig);
-            aktuelleAusstattungsKonfig = JSON.parse(JSON.stringify(suchKonfigurationenDefault));
-            renderAusstattung();
-        });
-        popup.appendChild(btnResetAusstattung);
+        function renderAusstattung() {
+            sanitizeExpandedAusstattungIndex();
+            ausstattungContainer.innerHTML = '';
+            const vis = getVisibleAusIndices();
+            const { a, t } = countAusaktiv();
+            ausMeta.textContent = 'Bulk-Aktionen wirken auf ' + vis.length + ' von ' + t + ' sichtbare Einträge (gesamt ' + t + ', davon ' + a + ' aktiv).';
+            if (aktuelleAusstattungsKonfig.length === 0) {
+                ausstattungContainer.appendChild(mkEmptyState('Noch keine Einträge.'));
+                updateTabBadges();
+                refreshValidationUI();
+                return;
+            }
+            if (vis.length === 0) {
+                ausstattungContainer.appendChild(mkEmptyState('Keine Treffer für den aktuellen Filter.'));
+                updateTabBadges();
+                refreshValidationUI();
+                return;
+            }
 
-        // ===== B) Tech =====
-        const techTitle = document.createElement('h3');
-        techTitle.textContent = 'Technische Daten-Konfiguration';
-        techTitle.style.borderBottom = '1px solid #444';
-        techTitle.style.paddingBottom = '4px';
-        techTitle.style.marginTop = '16px';
-        popup.appendChild(techTitle);
+            aktuelleAusstattungsKonfig.forEach((item, index) => {
+                if (!ausstattungSichtbar(item)) return;
+                const card = document.createElement('div');
+                card.className = 'mc-card';
+                card.dataset.cfgIndex = String(index);
+                card.draggable = false;
+
+                const errs = cardIssuesAus(index, item);
+                if (errs.length) {
+                    card.classList.add('mc-card--invalid');
+                    const er = document.createElement('p');
+                    er.className = 'mc-card__err';
+                    er.textContent = errs.join(' · ');
+                    card.appendChild(er);
+                }
+
+                const rowTop = document.createElement('div');
+                rowTop.className = 'mc-card__main-row mc-card__main-row--aus';
+
+                const handle = mkDragHandle();
+                handle.draggable = true;
+                handle.addEventListener('dragstart', e => {
+                    draggedAusstattungIndex = parseInt(card.dataset.cfgIndex, 10);
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', String(draggedAusstattungIndex));
+                });
+                handle.addEventListener('dragend', () => { draggedAusstattungIndex = null; });
+
+                const toggleEl = mkToggle(item.aktiv === true, v => {
+                    item.aktiv = v;
+                    markDirty();
+                    renderAusstattung();
+                    refreshValidationUI();
+                });
+
+                const headerLine = document.createElement('div');
+                headerLine.className = 'mc-card__header-line';
+                const titleInp = document.createElement('input');
+                titleInp.type = 'text';
+                titleInp.className = 'mc-card__title-input mc-input' + (!item.aktiv ? ' inactive' : '');
+                titleInp.value = item.anzeige || '';
+                titleInp.placeholder = 'Anzeigetext';
+                titleInp.addEventListener('input', () => {
+                    item.anzeige = titleInp.value;
+                    markDirty();
+                    refreshValidationUI();
+                });
+
+                const panelId = 'mc-card-panel-' + index;
+
+                headerLine.appendChild(titleInp);
+
+                const colorRow = mkColorInput(item.farbe || '', v => {
+                    item.farbe = v;
+                    markDirty();
+                });
+
+                headerLine.appendChild(colorRow);
+
+                rowTop.appendChild(handle);
+                const tw = document.createElement('div');
+                tw.className = 'mc-toggle-wrap';
+                tw.appendChild(toggleEl);
+                rowTop.appendChild(tw);
+                rowTop.appendChild(headerLine);
+
+                const pillRow = document.createElement('div');
+                pillRow.className = 'mc-pill-row';
+                const pf = document.createElement('label');
+                pf.className = 'mc-pill' + (item.nurInFeatures ? ' mc-pill--on' : '');
+                pf.title = 'Nur in der strukturierten Ausstattungsliste suchen, Beschreibungstext ignorieren';
+                const pfc = document.createElement('input');
+                pfc.type = 'checkbox';
+                pfc.checked = item.nurInFeatures === true;
+                pfc.addEventListener('change', () => {
+                    item.nurInFeatures = pfc.checked;
+                    pf.classList.toggle('mc-pill--on', pfc.checked);
+                    markDirty();
+                });
+                pf.appendChild(pfc);
+                pf.appendChild(document.createTextNode('Nur Ausstattungsliste '));
+                const inf1 = document.createElement('span');
+                inf1.className = 'mc-info';
+                inf1.textContent = '?';
+                inf1.title = pf.title;
+                pf.appendChild(inf1);
+
+                const pc = document.createElement('label');
+                pc.className = 'mc-pill' + (item.compound ? ' mc-pill--on' : '');
+                pc.title = 'Treffer auch mitten im Wort erlauben (z.B. „heizung" findet „Standheizung")';
+                const pcc = document.createElement('input');
+                pcc.type = 'checkbox';
+                pcc.checked = item.compound === true;
+                pcc.addEventListener('change', () => {
+                    item.compound = pcc.checked;
+                    pc.classList.toggle('mc-pill--on', pcc.checked);
+                    markDirty();
+                });
+                pc.appendChild(pcc);
+                pc.appendChild(document.createTextNode('Wortteil-Suche '));
+                const inf2 = document.createElement('span');
+                inf2.className = 'mc-info';
+                inf2.textContent = '?';
+                inf2.title = pc.title;
+                pc.appendChild(inf2);
+
+                pillRow.appendChild(pf);
+                pillRow.appendChild(pc);
+                rowTop.appendChild(pillRow);
+
+                const expandBtn = document.createElement('button');
+                expandBtn.type = 'button';
+                expandBtn.className = 'mc-btn mc-btn--ghost mc-card__expand';
+                expandBtn.setAttribute('aria-controls', panelId);
+                const expandIcon = document.createElement('span');
+                expandIcon.className = 'mc-card__expand-icon';
+                expandIcon.setAttribute('aria-hidden', 'true');
+                expandIcon.textContent = '▾';
+                const expandLabelWrap = document.createElement('span');
+                expandLabelWrap.className = 'mc-card__expand-label-wrap';
+                const expandMainLabel = document.createElement('span');
+                expandMainLabel.className = 'mc-card__expand-main';
+                expandMainLabel.setAttribute('aria-hidden', 'true');
+                expandLabelWrap.appendChild(expandMainLabel);
+                expandBtn.appendChild(expandIcon);
+                expandBtn.appendChild(expandLabelWrap);
+                rowTop.appendChild(expandBtn);
+
+                card.appendChild(rowTop);
+
+                const adv = document.createElement('div');
+                adv.id = panelId;
+                adv.className = 'mc-advanced' + (expandedAusstattungIndex !== null && expandedAusstattungIndex === index ? ' mc-advanced--open' : '');
+                function updateExpandButton() {
+                    const isOpen = expandedAusstattungIndex !== null && expandedAusstattungIndex === index;
+                    const n = Array.isArray(item.begriffe) ? item.begriffe.length : 0;
+                    const v = Array.isArray(item.verboten) ? item.verboten.length : 0;
+                    const begriffeW = n === 1 ? 'Begriff' : 'Begriffe';
+                    const verboteW = v === 1 ? 'Verbot' : 'Verbote';
+                    expandBtn.setAttribute('aria-expanded', String(isOpen));
+                    expandMainLabel.textContent = 'Details [' + n + ']';
+                    expandBtn.title = 'Details anzeigen / verbergen — ' + n + ' ' + begriffeW + ', ' + v + ' ' + verboteW;
+                    expandBtn.setAttribute('aria-label',
+                        (isOpen
+                            ? 'Details-Bereich verbergen. Blendet die Felder für Suchbegriffe und verbotene Wörter aus.'
+                            : 'Details-Bereich anzeigen. Öffnet die Felder zum Bearbeiten von Suchbegriffen und verbotenen Wörtern.') +
+                        ' Aktuell ' + n + ' ' + begriffeW + ' und ' + v + ' ' + verboteW + '.');
+                }
+                function toggleAdvanced() {
+                    if (expandedAusstattungIndex === index) expandedAusstattungIndex = null;
+                    else expandedAusstattungIndex = index;
+                    applyAusAccordionStateToAusCards();
+                }
+                updateExpandButton();
+                expandBtn.addEventListener('click', e => {
+                    e.stopPropagation();
+                    toggleAdvanced();
+                });
+                const lb1 = document.createElement('div');
+                lb1.className = 'mc-label-sm';
+                lb1.textContent = 'Begriffe (Komma-getrennt)';
+                const txtBegriffe = document.createElement('textarea');
+                txtBegriffe.className = 'mc-textarea';
+                txtBegriffe.rows = 3;
+                txtBegriffe.value = (item.begriffe || []).join(', ');
+                txtBegriffe.addEventListener('input', () => {
+                    item.begriffe = txtBegriffe.value.split(',').map(s => s.trim()).filter(Boolean);
+                    markDirty();
+                    refreshValidationUI();
+                    updateExpandButton();
+                });
+                const lb2 = document.createElement('div');
+                lb2.className = 'mc-label-sm';
+                lb2.textContent = 'Verbotene Wörter';
+                const txtVerboten = document.createElement('textarea');
+                txtVerboten.className = 'mc-textarea';
+                txtVerboten.rows = 2;
+                txtVerboten.value = (item.verboten || []).join(', ');
+                txtVerboten.addEventListener('input', () => {
+                    item.verboten = txtVerboten.value.split(',').map(s => s.trim()).filter(Boolean);
+                    markDirty();
+                    updateExpandButton();
+                });
+                const btnLoeschen = mkBtn('ghost', 'Löschen', () => {
+                    pushUndo({ kind: 'ausstattung', data: snapshotAus() });
+                    const ix = parseInt(card.dataset.cfgIndex, 10);
+                    aktuelleAusstattungsKonfig.splice(ix, 1);
+                    if (expandedAusstattungIndex !== null) {
+                        if (expandedAusstattungIndex === ix) expandedAusstattungIndex = null;
+                        else if (expandedAusstattungIndex > ix) expandedAusstattungIndex--;
+                    }
+                    markDirty();
+                    renderAusstattung();
+                    showToast('Eintrag entfernt', 'success');
+                });
+                btnLoeschen.style.alignSelf = 'flex-end';
+
+                adv.appendChild(lb1);
+                adv.appendChild(txtBegriffe);
+                adv.appendChild(lb2);
+                adv.appendChild(txtVerboten);
+                adv.appendChild(btnLoeschen);
+                card.appendChild(adv);
+
+                card.addEventListener('dragover', e => e.preventDefault());
+                card.addEventListener('drop', e => {
+                    e.preventDefault();
+                    const to = parseInt(card.dataset.cfgIndex, 10);
+                    if (draggedAusstattungIndex === null || draggedAusstattungIndex === to) return;
+                    pushUndo({ kind: 'ausstattung', data: snapshotAus() });
+                    const from = draggedAusstattungIndex;
+                    const moved = aktuelleAusstattungsKonfig[from];
+                    aktuelleAusstattungsKonfig.splice(from, 1);
+                    const insertAt = from < to ? to - 1 : to;
+                    aktuelleAusstattungsKonfig.splice(insertAt, 0, moved);
+                    reorderExpandedAusAfterDrop(from, to);
+                    draggedAusstattungIndex = null;
+                    markDirty();
+                    renderAusstattung();
+                });
+
+                ausstattungContainer.appendChild(card);
+            });
+            updateTabBadges();
+            refreshValidationUI();
+        }
+
+        /** --- Tech --- */
+        const techToolbar = document.createElement('div');
+        techToolbar.className = 'mc-toolbar';
+        const techMeta = document.createElement('div');
+        techMeta.className = 'mc-toolbar-meta';
+        const techSearch = mkSearchBox('Suche (Begriff)…', () => { renderTechData(); });
+        const techBulkOn = mkBtn('ghost', 'Alle ein', () => bulkTechAlle(true));
+        const techBulkOff = mkBtn('ghost', 'Alle aus', () => bulkTechAlle(false));
+        const techBulkVisOn = mkBtn('ghost', 'Sichtbare ein', () => bulkTechSichtbar(true));
+        const techBulkVisOff = mkBtn('ghost', 'Sichtbare aus', () => bulkTechSichtbar(false));
+        const btnNeuTech = mkBtn('primary', '+ Neu', () => {
+            aktuelleTechKonfigurationen.push({ begriff: '', aktiv: true });
+            markDirty();
+            renderTechData();
+        });
+        const btnResetTech = mkBtn('danger', 'Reset Defaults', async () => {
+            const ok = await confirmAsync('Tech-Konfiguration auf Defaults zurücksetzen? Aktueller Stand wird vorher gesichert.');
+            if (!ok) return;
+            pushUndo({ kind: 'tech', data: snapshotTech() });
+            speichereConfig(STORAGE_KEYS.backupPrefix + Date.now() + '_techconfig', aktuelleTechKonfigurationen);
+            aktuelleTechKonfigurationen = JSON.parse(JSON.stringify(techDataKonfigurationenDefault));
+            markDirty();
+            renderTechData();
+            showToast('Tech-Daten auf Standard zurückgesetzt', 'success');
+        });
+        techToolbar.appendChild(techSearch);
+        techToolbar.appendChild(techBulkOn);
+        techToolbar.appendChild(techBulkOff);
+        techToolbar.appendChild(techBulkVisOn);
+        techToolbar.appendChild(techBulkVisOff);
+        techToolbar.appendChild(btnNeuTech);
+        techToolbar.appendChild(btnResetTech);
+        techToolbar.appendChild(techMeta);
 
         const techContainer = document.createElement('div');
-        popup.appendChild(techContainer);
+        panelTech.appendChild(techToolbar);
+        panelTech.appendChild(techContainer);
+        installKonfigTabHelp('tech', 'mc-konfig-help-tech', 'Hilfe zum Tab Tech-Daten', 'Hilfe zu Tech-Daten', techToolbar, techMeta, panelTech, techContainer);
+
+        function techSichtbar(item) {
+            const f = techSearch._input.value.trim().toLowerCase();
+            if (!f) return true;
+            return String(item.begriff || '').toLowerCase().includes(f);
+        }
+
+        function getVisibleTechIndices() {
+            const ix = [];
+            aktuelleTechKonfigurationen.forEach((item, idx) => {
+                if (techSichtbar(item)) ix.push(idx);
+            });
+            return ix;
+        }
+
+        function bulkTechAlle(flag) {
+            pushUndo({ kind: 'tech', data: snapshotTech() });
+            aktuelleTechKonfigurationen.forEach(i => { i.aktiv = flag; });
+            markDirty();
+            renderTechData();
+            showToast('Alle Tech-Zeilen ' + (flag ? 'aktiviert' : 'deaktiviert'), 'success');
+        }
+
+        function bulkTechSichtbar(flag) {
+            const vis = getVisibleTechIndices();
+            if (!vis.length) {
+                showToast('Keine sichtbaren Tech-Einträge', 'warn');
+                return;
+            }
+            pushUndo({ kind: 'tech', data: snapshotTech() });
+            vis.forEach(ix => { aktuelleTechKonfigurationen[ix].aktiv = flag; });
+            markDirty();
+            renderTechData();
+            showToast('Sichtbare Tech-Einträge ' + (flag ? 'aktiviert' : 'deaktiviert'), 'success');
+        }
+
+        function cardIssuesTech(item) {
+            const errs = [];
+            if (!String(item.begriff || '').trim()) errs.push('Begriff fehlt');
+            return errs;
+        }
 
         function renderTechData() {
             techContainer.innerHTML = '';
-            let draggedTechItemIndex = null;
+            const vis = getVisibleTechIndices();
+            const total = aktuelleTechKonfigurationen.length;
+            const act = aktuelleTechKonfigurationen.filter(t => t.aktiv).length;
+            techMeta.textContent = 'Bulk auf ' + vis.length + ' von ' + total + ' sichtbare Zeilen · ' + act + ' aktiv.';
+
+            if (aktuelleTechKonfigurationen.length === 0) {
+                techContainer.appendChild(mkEmptyState('Keine Tech-Parameter.'));
+                updateTabBadges();
+                refreshValidationUI();
+                return;
+            }
+            if (!vis.length) {
+                techContainer.appendChild(mkEmptyState('Keine Treffer.'));
+                updateTabBadges();
+                refreshValidationUI();
+                return;
+            }
+
             aktuelleTechKonfigurationen.forEach((item, index) => {
-                const divItem = document.createElement('div');
-                Object.assign(divItem.style, {
-                    border: '1px solid #444', borderRadius: '6px',
-                    padding: '10px', marginBottom: '8px', backgroundColor: '#3b3c42',
-                    cursor: 'grab'
-                });
-                divItem.draggable = true;
-                divItem.addEventListener('dragstart', e => {
-                    draggedTechItemIndex = index;
-                    e.dataTransfer.setData('text/plain', '');
-                    e.dataTransfer.effectAllowed = 'move';
-                });
-                divItem.addEventListener('dragover', e => e.preventDefault());
-                divItem.addEventListener('drop', e => {
-                    e.preventDefault();
-                    if (draggedTechItemIndex === null || draggedTechItemIndex === index) return;
-                    const moved = aktuelleTechKonfigurationen[draggedTechItemIndex];
-                    aktuelleTechKonfigurationen.splice(draggedTechItemIndex, 1);
-                    const insertAt = draggedTechItemIndex < index ? index - 1 : index;
-                    aktuelleTechKonfigurationen.splice(insertAt, 0, moved);
-                    draggedTechItemIndex = null;
-                    renderTechData();
-                });
+                if (!techSichtbar(item)) return;
+                const card = document.createElement('div');
+                card.className = 'mc-card';
+                card.dataset.techIndex = String(index);
+
+                const te = cardIssuesTech(item);
+                if (te.length) {
+                    card.classList.add('mc-card--invalid');
+                    const er = document.createElement('p');
+                    er.className = 'mc-card__err';
+                    er.textContent = te.join(' · ');
+                    card.appendChild(er);
+                }
 
                 const row = document.createElement('div');
-                Object.assign(row.style, { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' });
+                row.className = 'mc-card__main-row mc-card__main-row--tech';
+                const handle = mkDragHandle();
+                handle.draggable = true;
+                handle.addEventListener('dragstart', e => {
+                    draggedTechItemIndex = parseInt(card.dataset.techIndex, 10);
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', String(draggedTechItemIndex));
+                });
+                handle.addEventListener('dragend', () => { draggedTechItemIndex = null; });
 
-                const cb = document.createElement('input');
-                cb.type = 'checkbox';
-                cb.checked = item.aktiv === true;
-                cb.addEventListener('change', () => { item.aktiv = cb.checked; });
-
-                const lbl = document.createElement('label');
-                lbl.textContent = 'aktiv';
+                const toggleEl = mkToggle(item.aktiv === true, v => {
+                    item.aktiv = v;
+                    markDirty();
+                    renderTechData();
+                    refreshValidationUI();
+                });
+                const tw = document.createElement('div');
+                tw.className = 'mc-toggle-wrap';
+                tw.appendChild(toggleEl);
 
                 const input = document.createElement('input');
                 input.type = 'text';
-                input.value = item.begriff;
-                input.placeholder = 'z.B. Fahrzeugzustand';
-                Object.assign(input.style, { flex: '1', minWidth: '200px' });
-                input.addEventListener('input', () => { item.begriff = input.value; });
-
-                const btnDel = document.createElement('button');
-                btnDel.textContent = 'Löschen';
-                Object.assign(btnDel.style, {
-                    cursor: 'pointer', padding: '4px 8px', border: 'none',
-                    borderRadius: '4px', backgroundColor: '#a33', color: '#fff'
+                input.className = 'mc-input';
+                input.style.flex = '1';
+                input.value = item.begriff || '';
+                input.placeholder = 'z. B. Fahrzeugzustand';
+                input.addEventListener('input', () => {
+                    item.begriff = input.value;
+                    markDirty();
+                    refreshValidationUI();
                 });
-                btnDel.addEventListener('click', () => {
-                    aktuelleTechKonfigurationen.splice(index, 1);
+
+                row.appendChild(handle);
+                row.appendChild(tw);
+
+                const mid = document.createElement('div');
+                mid.style.flex = '1';
+                mid.style.minWidth = '0';
+                mid.appendChild(input);
+                row.appendChild(mid);
+
+                const btnDel = mkBtn('ghost', 'Löschen', () => {
+                    pushUndo({ kind: 'tech', data: snapshotTech() });
+                    const ix = parseInt(card.dataset.techIndex, 10);
+                    aktuelleTechKonfigurationen.splice(ix, 1);
+                    markDirty();
                     renderTechData();
                 });
 
-                row.appendChild(cb);
-                row.appendChild(lbl);
-                row.appendChild(input);
                 row.appendChild(btnDel);
-                divItem.appendChild(row);
-                techContainer.appendChild(divItem);
+                card.appendChild(row);
+
+                card.addEventListener('dragover', e => e.preventDefault());
+                card.addEventListener('drop', e => {
+                    e.preventDefault();
+                    const to = parseInt(card.dataset.techIndex, 10);
+                    if (draggedTechItemIndex === null || draggedTechItemIndex === to) return;
+                    pushUndo({ kind: 'tech', data: snapshotTech() });
+                    const from = draggedTechItemIndex;
+                    const moved = aktuelleTechKonfigurationen[from];
+                    aktuelleTechKonfigurationen.splice(from, 1);
+                    const insertAt = from < to ? to - 1 : to;
+                    aktuelleTechKonfigurationen.splice(insertAt, 0, moved);
+                    draggedTechItemIndex = null;
+                    markDirty();
+                    renderTechData();
+                });
+
+                techContainer.appendChild(card);
             });
+            updateTabBadges();
+            refreshValidationUI();
         }
-        renderTechData();
 
-        const btnNeuTech = document.createElement('button');
-        btnNeuTech.textContent = 'Neuen Tech-Parameter hinzufügen';
-        Object.assign(btnNeuTech.style, {
-            cursor: 'pointer', padding: '6px 10px', border: 'none',
-            borderRadius: '4px', backgroundColor: '#4caf50', color: '#fff',
-            marginTop: '8px', marginRight: '8px'
+        /** --- Merge --- */
+        const mergeToolbar = document.createElement('div');
+        mergeToolbar.className = 'mc-toolbar';
+        const mergeMeta = document.createElement('div');
+        mergeMeta.className = 'mc-toolbar-meta';
+        const mergeSearch = mkSearchBox('Suche nach Basis…', () => renderMergeConfig());
+        const btnNewMerge = mkBtn('primary', '+ Neu', () => {
+            aktuelleMergeGruppen.push({ basis: '', order: [] });
+            markDirty();
+            renderMergeConfig();
         });
-        btnNeuTech.addEventListener('click', () => {
-            aktuelleTechKonfigurationen.push({ begriff: '', aktiv: true });
-            renderTechData();
+        const btnResetMerge = mkBtn('danger', 'Reset Defaults', async () => {
+            const ok = await confirmAsync('Merge-Gruppen auf Defaults zurücksetzen? Aktueller Stand wird vorher gesichert.');
+            if (!ok) return;
+            pushUndo({ kind: 'merge', data: snapshotMerge() });
+            speichereConfig(STORAGE_KEYS.backupPrefix + Date.now() + '_mergeGruppen', aktuelleMergeGruppen);
+            aktuelleMergeGruppen = JSON.parse(JSON.stringify(mergeGruppenConfigDefault));
+            markDirty();
+            renderMergeConfig();
+            showToast('Merge-Gruppen auf Standard zurückgesetzt', 'success');
         });
-        popup.appendChild(btnNeuTech);
-
-        const btnResetTech = document.createElement('button');
-        btnResetTech.textContent = 'Standard wiederherstellen';
-        Object.assign(btnResetTech.style, {
-            cursor: 'pointer', padding: '6px 10px', border: 'none',
-            borderRadius: '4px', backgroundColor: '#666', color: '#fff', marginTop: '8px'
-        });
-        btnResetTech.addEventListener('click', () => {
-            if (!confirm('Tech-Konfiguration auf Defaults zurücksetzen? Aktueller Stand wird vorher gesichert.')) return;
-            speichereConfig(STORAGE_KEYS.backupPrefix + Date.now() + '_techconfig', aktuelleTechKonfigurationen);
-            aktuelleTechKonfigurationen = JSON.parse(JSON.stringify(techDataKonfigurationenDefault));
-            renderTechData();
-        });
-        popup.appendChild(btnResetTech);
-
-        // ===== C) Merge-Gruppen =====
-        const mergeTitle = document.createElement('h3');
-        mergeTitle.textContent = 'Merge-Gruppen Konfiguration';
-        mergeTitle.style.borderBottom = '1px solid #444';
-        mergeTitle.style.paddingBottom = '4px';
-        mergeTitle.style.marginTop = '16px';
-        popup.appendChild(mergeTitle);
+        mergeToolbar.appendChild(mergeSearch);
+        mergeToolbar.appendChild(btnNewMerge);
+        mergeToolbar.appendChild(btnResetMerge);
+        mergeToolbar.appendChild(mergeMeta);
 
         const mergeContainer = document.createElement('div');
-        popup.appendChild(mergeContainer);
+        panelMerge.appendChild(mergeToolbar);
+        panelMerge.appendChild(mergeContainer);
+        installKonfigTabHelp('merge', 'mc-konfig-help-merge', 'Hilfe zum Tab Merge-Gruppen', 'Hilfe zu Merge-Gruppen', mergeToolbar, mergeMeta, panelMerge, mergeContainer);
+
+        function mergeSichtbar(g) {
+            const f = mergeSearch._input.value.trim().toLowerCase();
+            if (!f) return true;
+            if ((g.basis || '').toLowerCase().includes(f)) return true;
+            if ((g.order || []).some(o => String(o).toLowerCase().includes(f))) return true;
+            return false;
+        }
+
+        function cardIssuesMerge(g) {
+            const errs = [];
+            if (!(g.basis || '').trim()) errs.push('Basis fehlt');
+            if (!Array.isArray(g.order) || !g.order.length) errs.push('Reihenfolge leer');
+            return errs;
+        }
 
         function renderMergeConfig() {
             mergeContainer.innerHTML = '';
+            const filt = aktuelleMergeGruppen.filter(mergeSichtbar);
+            mergeMeta.textContent = filt.length + ' von ' + aktuelleMergeGruppen.length + ' Gruppen sichtbar.';
+            if (aktuelleMergeGruppen.length === 0) {
+                mergeContainer.appendChild(mkEmptyState('Keine Merge-Gruppen.'));
+                updateTabBadges();
+                refreshValidationUI();
+                return;
+            }
+            if (filt.length === 0) {
+                mergeContainer.appendChild(mkEmptyState('Keine Treffer für die Suche.'));
+                updateTabBadges();
+                refreshValidationUI();
+                return;
+            }
+
             aktuelleMergeGruppen.forEach((group, index) => {
-                const divGroup = document.createElement('div');
-                Object.assign(divGroup.style, {
-                    border: '1px solid #444', borderRadius: '6px',
-                    padding: '10px', marginBottom: '8px', backgroundColor: '#3b3c42',
-                    display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap'
-                });
+                if (!mergeSichtbar(group)) return;
+                const card = document.createElement('div');
+                card.className = 'mc-card';
+
+                const me = cardIssuesMerge(group);
+                if (me.length) {
+                    card.classList.add('mc-card--invalid');
+                    const er = document.createElement('p');
+                    er.className = 'mc-card__err';
+                    er.textContent = me.join(' · ');
+                    card.appendChild(er);
+                }
 
                 const inputBasis = document.createElement('input');
                 inputBasis.type = 'text';
+                inputBasis.className = 'mc-input';
+                inputBasis.style.width = '100%';
                 inputBasis.value = group.basis || '';
-                inputBasis.placeholder = 'Basis (z.B. außenspiegel)';
-                inputBasis.style.width = '40%';
-                inputBasis.addEventListener('input', () => { group.basis = inputBasis.value; });
+                inputBasis.placeholder = 'Basis (z. B. außenspiegel)';
+                inputBasis.addEventListener('input', () => {
+                    group.basis = inputBasis.value;
+                    markDirty();
+                    refreshValidationUI();
+                });
 
+                const lb = document.createElement('div');
+                lb.className = 'mc-label-sm';
+                lb.textContent = 'Reihenfolge der Modifier (Komma-getrennt)';
                 const inputOrder = document.createElement('input');
                 inputOrder.type = 'text';
+                inputOrder.className = 'mc-input';
+                inputOrder.style.width = '100%';
                 inputOrder.value = (group.order || []).join(', ');
-                inputOrder.placeholder = 'Reihenfolge, Komma-getrennt';
-                inputOrder.style.flex = '1';
                 inputOrder.addEventListener('input', () => {
                     group.order = inputOrder.value.split(',').map(s => s.trim()).filter(Boolean);
+                    markDirty();
+                    refreshValidationUI();
                 });
 
-                const btnDel = document.createElement('button');
-                btnDel.textContent = 'Löschen';
-                Object.assign(btnDel.style, {
-                    cursor: 'pointer', padding: '4px 8px', border: 'none',
-                    borderRadius: '4px', backgroundColor: '#a33', color: '#fff'
-                });
-                btnDel.addEventListener('click', () => {
+                const btnDel = mkBtn('ghost', 'Löschen', () => {
+                    pushUndo({ kind: 'merge', data: snapshotMerge() });
                     aktuelleMergeGruppen.splice(index, 1);
+                    markDirty();
                     renderMergeConfig();
+                    showToast('Merge-Gruppe entfernt', 'success');
                 });
+                btnDel.style.alignSelf = 'flex-end';
 
-                divGroup.appendChild(inputBasis);
-                divGroup.appendChild(inputOrder);
-                divGroup.appendChild(btnDel);
-                mergeContainer.appendChild(divGroup);
+                card.appendChild(inputBasis);
+                card.appendChild(lb);
+                card.appendChild(inputOrder);
+                card.appendChild(btnDel);
+                mergeContainer.appendChild(card);
             });
+            updateTabBadges();
+            refreshValidationUI();
         }
-        renderMergeConfig();
 
-        const btnNewMergeGroup = document.createElement('button');
-        btnNewMergeGroup.textContent = 'Neue Merge-Gruppe hinzufügen';
-        Object.assign(btnNewMergeGroup.style, {
-            cursor: 'pointer', padding: '6px 10px', border: 'none',
-            borderRadius: '4px', backgroundColor: '#4caf50', color: '#fff',
-            marginTop: '8px', marginRight: '8px'
-        });
-        btnNewMergeGroup.addEventListener('click', () => {
-            aktuelleMergeGruppen.push({ basis: '', order: [] });
-            renderMergeConfig();
-        });
-        popup.appendChild(btnNewMergeGroup);
+        /** --- Import / Export --- */
+        const ieToolbar = document.createElement('div');
+        ieToolbar.className = 'mc-toolbar';
+        const ieRow = document.createElement('div');
+        ieRow.className = 'mc-row-ie';
 
-        const btnResetMerge = document.createElement('button');
-        btnResetMerge.textContent = 'Standard wiederherstellen';
-        Object.assign(btnResetMerge.style, {
-            cursor: 'pointer', padding: '6px 10px', border: 'none',
-            borderRadius: '4px', backgroundColor: '#666', color: '#fff', marginTop: '8px'
-        });
-        btnResetMerge.addEventListener('click', () => {
-            if (!confirm('Merge-Gruppen auf Defaults zurücksetzen? Aktueller Stand wird vorher gesichert.')) return;
-            speichereConfig(STORAGE_KEYS.backupPrefix + Date.now() + '_mergeGruppen', aktuelleMergeGruppen);
-            aktuelleMergeGruppen = JSON.parse(JSON.stringify(mergeGruppenConfigDefault));
-            renderMergeConfig();
-        });
-        popup.appendChild(btnResetMerge);
-
-        // ===== D) Import / Export =====
-        const ieTitle = document.createElement('h3');
-        ieTitle.textContent = 'Import / Export';
-        ieTitle.style.borderBottom = '1px solid #444';
-        ieTitle.style.paddingBottom = '4px';
-        ieTitle.style.marginTop = '16px';
-        popup.appendChild(ieTitle);
-
-        const ieContainer = document.createElement('div');
-        popup.appendChild(ieContainer);
-
-        const exportLabel = document.createElement('div');
-        exportLabel.textContent = 'Aktuelle Konfiguration (Export-JSON):';
-        exportLabel.style.marginTop = '8px';
-        ieContainer.appendChild(exportLabel);
-
+        const cardEx = document.createElement('div');
+        cardEx.className = 'mc-ie-card';
+        const exTitle = document.createElement('div');
+        exTitle.style.fontWeight = '600';
+        exTitle.style.marginBottom = '6px';
+        exTitle.textContent = 'Export';
         const exportArea = document.createElement('textarea');
-        Object.assign(exportArea.style, {
-            width: '100%', height: '100px', marginTop: '4px',
-            backgroundColor: '#3b3c42', color: '#fff'
-        });
+        exportArea.className = 'mc-textarea';
         exportArea.readOnly = true;
-        ieContainer.appendChild(exportArea);
+        exportArea.rows = 8;
+        exportArea.style.width = '100%';
+        exportArea.style.marginTop = '6px';
 
-        const btnGenerateExport = document.createElement('button');
-        btnGenerateExport.textContent = 'Export aktualisieren';
-        Object.assign(btnGenerateExport.style, {
-            cursor: 'pointer', padding: '6px 10px', border: 'none',
-            borderRadius: '4px', backgroundColor: '#333', color: '#fff',
-            marginTop: '4px', marginRight: '10px'
-        });
-        btnGenerateExport.addEventListener('click', () => {
-            const obj = {
+        function buildExportPayload() {
+            return {
                 __version: SCHEMA_VERSION,
                 suchKonfigurationen: aktuelleAusstattungsKonfig,
                 techDataKonfigurationen: aktuelleTechKonfigurationen,
                 mergeGruppenConfig: aktuelleMergeGruppen
             };
-            exportArea.value = JSON.stringify(obj, null, 2);
-        });
-        ieContainer.appendChild(btnGenerateExport);
+        }
 
-        const btnCopyExport = document.createElement('button');
-        btnCopyExport.textContent = 'In Zwischenablage kopieren';
-        Object.assign(btnCopyExport.style, {
-            cursor: 'pointer', padding: '6px 10px', border: 'none',
-            borderRadius: '4px', backgroundColor: '#555', color: '#fff', marginTop: '4px'
+        function refreshExportArea() {
+            exportArea.value = JSON.stringify(buildExportPayload(), null, 2);
+        }
+
+        const btnGenerateExport = mkBtn('ghost', 'Aktualisieren', () => {
+            refreshExportArea();
+            showToast('Export-Vorschau aktualisiert', 'success');
         });
-        btnCopyExport.addEventListener('click', async () => {
+        const btnCopyExport = mkBtn('ghost', 'Kopieren', async () => {
+            refreshExportArea();
             const text = exportArea.value || '';
             try {
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                    await navigator.clipboard.writeText(text);
-                } else {
-                    exportArea.select();
-                    document.execCommand('copy');
-                }
-                btnCopyExport.textContent = 'Kopiert!';
-                setTimeout(() => { btnCopyExport.textContent = 'In Zwischenablage kopieren'; }, 1200);
-            } catch (e) {
-                console.warn('Clipboard-Fehler:', e);
+                if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(text);
+                else { exportArea.select(); document.execCommand('copy'); }
+                showToast('In Zwischenablage kopiert', 'success');
+            } catch (_e) {
                 exportArea.select();
-                try { document.execCommand('copy'); } catch (_) {}
+                try { document.execCommand('copy'); showToast('Kopiert (Fallback)', 'success'); }
+                catch (_e2) { showToast('Konnte nicht kopieren', 'error'); }
             }
         });
-        ieContainer.appendChild(btnCopyExport);
+        const btnDownloadExport = mkBtn('primary', 'Download', () => {
+            refreshExportArea();
+            const blob = new Blob([exportArea.value], { type: 'application/json' });
+            const a = document.createElement('a');
+            const y = new Date();
+            const dateStr = y.getFullYear() + '-' + String(y.getMonth() + 1).padStart(2, '0') + '-' + String(y.getDate()).padStart(2, '0');
+            a.download = 'mobilede-config-' + dateStr + '.json';
+            a.href = URL.createObjectURL(blob);
+            a.click();
+            setTimeout(() => URL.revokeObjectURL(a.href), 2500);
+            showToast('Datei gestartet', 'success');
+        });
+        cardEx.appendChild(exTitle);
+        cardEx.appendChild(btnGenerateExport);
+        cardEx.appendChild(btnCopyExport);
+        cardEx.appendChild(btnDownloadExport);
+        cardEx.appendChild(exportArea);
 
-        const importLabel = document.createElement('div');
-        importLabel.textContent = 'Konfiguration importieren (füge JSON hier ein):';
-        importLabel.style.marginTop = '12px';
-        ieContainer.appendChild(importLabel);
+        const cardIm = document.createElement('div');
+        cardIm.className = 'mc-ie-card';
+        const imTitle = document.createElement('div');
+        imTitle.style.fontWeight = '600';
+        imTitle.style.marginBottom = '6px';
+        imTitle.textContent = 'Import';
+        const drop = document.createElement('div');
+        drop.className = 'mc-dropzone';
+        drop.textContent = 'JSON-Datei hierher ziehen oder klicken';
+        const fileInp = document.createElement('input');
+        fileInp.type = 'file';
+        fileInp.accept = 'application/json,.json';
+        fileInp.style.display = 'none';
+        drop.addEventListener('click', () => fileInp.click());
+        drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('mc-dropzone--hover'); });
+        drop.addEventListener('dragleave', () => drop.classList.remove('mc-dropzone--hover'));
+        drop.addEventListener('drop', e => {
+            e.preventDefault();
+            drop.classList.remove('mc-dropzone--hover');
+            const file = e.dataTransfer.files && e.dataTransfer.files[0];
+            if (!file) return;
+            const r = new FileReader();
+            r.onload = () => {
+                importArea.value = String(r.result || '');
+                showToast('Datei eingeladen – bitte prüfen', 'success');
+            };
+            r.readAsText(file);
+        });
+        fileInp.addEventListener('change', () => {
+            const file = fileInp.files && fileInp.files[0];
+            if (!file) return;
+            const r = new FileReader();
+            r.onload = () => {
+                importArea.value = String(r.result || '');
+                showToast('Datei eingeladen', 'success');
+            };
+            r.readAsText(file);
+            fileInp.value = '';
+        });
 
         const importArea = document.createElement('textarea');
-        Object.assign(importArea.style, {
-            width: '100%', height: '100px', marginTop: '4px',
-            backgroundColor: '#3b3c42', color: '#fff'
-        });
-        ieContainer.appendChild(importArea);
+        importArea.className = 'mc-textarea';
+        importArea.rows = 8;
+        importArea.style.width = '100%';
+        importArea.style.marginTop = '6px';
+        importArea.placeholder = 'JSON einfügen…';
 
-        const btnImport = document.createElement('button');
-        btnImport.textContent = 'Import durchführen';
-        Object.assign(btnImport.style, {
-            cursor: 'pointer', padding: '6px 10px', border: 'none',
-            borderRadius: '4px', backgroundColor: '#333', color: '#fff', marginTop: '4px'
-        });
-        btnImport.addEventListener('click', () => {
+        const btnImport = mkBtn('primary', 'Import durchführen', async () => {
             const text = importArea.value.trim();
-            if (!text) return;
+            if (!text) {
+                showToast('Import: Textfeld ist leer', 'warn');
+                return;
+            }
+            try {
+                JSON.parse(text);
+            } catch (err) {
+                showToast('Ungültiges JSON: ' + err, 'error');
+                return;
+            }
+            const ok = await confirmAsync('Import ersetzt die geladenen Konfig-Daten im Popup (vorher automatisches Backup in GM-Speicher). Fortfahren?');
+            if (!ok) return;
             try {
                 const obj = JSON.parse(text);
-                // Backup vorher
                 const ts = Date.now();
-                speichereConfig(STORAGE_KEYS.backupPrefix + ts + '_config',      aktuelleAusstattungsKonfig);
-                speichereConfig(STORAGE_KEYS.backupPrefix + ts + '_techconfig',  aktuelleTechKonfigurationen);
+                pushUndo({ kind: 'all', aus: snapshotAus(), tech: snapshotTech(), merge: snapshotMerge() });
+                speichereConfig(STORAGE_KEYS.backupPrefix + ts + '_config', aktuelleAusstattungsKonfig);
+                speichereConfig(STORAGE_KEYS.backupPrefix + ts + '_techconfig', aktuelleTechKonfigurationen);
                 speichereConfig(STORAGE_KEYS.backupPrefix + ts + '_mergeGruppen', aktuelleMergeGruppen);
 
-                if (Array.isArray(obj.suchKonfigurationen))     aktuelleAusstattungsKonfig    = obj.suchKonfigurationen;
-                if (Array.isArray(obj.techDataKonfigurationen)) aktuelleTechKonfigurationen   = obj.techDataKonfigurationen;
-                if (Array.isArray(obj.mergeGruppenConfig))      aktuelleMergeGruppen          = obj.mergeGruppenConfig;
+                if (Array.isArray(obj.suchKonfigurationen)) aktuelleAusstattungsKonfig = obj.suchKonfigurationen;
+                if (Array.isArray(obj.techDataKonfigurationen)) aktuelleTechKonfigurationen = obj.techDataKonfigurationen;
+                if (Array.isArray(obj.mergeGruppenConfig)) aktuelleMergeGruppen = obj.mergeGruppenConfig;
+                markDirty();
                 renderAusstattung();
                 renderTechData();
                 renderMergeConfig();
-                alert('Import erfolgreich. Bitte ggf. noch "Speichern" klicken.\nBackup wurde erstellt mit Timestamp ' + ts);
-            } catch (e) {
-                alert('Fehler beim Import. Ungültiges JSON?\n' + e);
+                refreshExportArea();
+                showToast('Import angewendet. Backup-Zeitstempel: ' + ts + '. Bitte Speichern klicken.', 'success');
+            } catch (e2) {
+                showToast('Fehler beim Import: ' + e2, 'error');
             }
         });
-        ieContainer.appendChild(btnImport);
 
-        // ===== E) Validierung-Anzeige =====
-        const validationBar = document.createElement('div');
-        validationBar.style.marginTop = '12px';
-        validationBar.style.fontSize = '12px';
-        validationBar.style.color = '#ffae42';
-        popup.appendChild(validationBar);
+        cardIm.appendChild(imTitle);
+        cardIm.appendChild(drop);
+        cardIm.appendChild(fileInp);
+        cardIm.appendChild(importArea);
+        cardIm.appendChild(btnImport);
 
-        function validate() {
+        ieRow.appendChild(cardEx);
+        ieRow.appendChild(cardIm);
+        panelIE.appendChild(ieToolbar);
+        panelIE.appendChild(ieRow);
+        installKonfigTabHelp('ie', 'mc-konfig-help-ie', 'Hilfe zum Tab Import / Export', 'Hilfe zu Import und Export', ieToolbar, null, panelIE, ieRow);
+
+        /** Validation + footer status */
+        let allIssues = [];
+
+        function collectValidation() {
             const issues = [];
-            const seenAnzeige = new Map();
             aktuelleAusstattungsKonfig.forEach((item, idx) => {
-                if (!item.anzeige || !item.anzeige.trim()) issues.push(`Eintrag #${idx + 1}: leerer Anzeigetext.`);
-                if (!Array.isArray(item.begriffe) || item.begriffe.length === 0) issues.push(`"${item.anzeige || '(leer)'}": keine Begriffe.`);
-                const key = (item.anzeige || '').trim().toLowerCase();
-                if (key) {
-                    if (seenAnzeige.has(key)) issues.push(`Doppelte Anzeige: "${item.anzeige}"`);
-                    else seenAnzeige.set(key, idx);
-                }
+                cardIssuesAus(idx, item).forEach(msg => issues.push('[Ausstattung #' + (idx + 1) + '] ' + msg));
+            });
+            aktuelleTechKonfigurationen.forEach((item, idx) => {
+                cardIssuesTech(item).forEach(msg => issues.push('[Tech #' + (idx + 1) + '] ' + msg));
+            });
+            aktuelleMergeGruppen.forEach((g, idx) => {
+                cardIssuesMerge(g).forEach(msg => issues.push('[Merge #' + (idx + 1) + '] ' + msg));
             });
             return issues;
         }
 
-        // ===== F) Save/Cancel =====
-        const buttonBar = document.createElement('div');
-        buttonBar.style.textAlign = 'right';
-        buttonBar.style.marginTop = '20px';
+        function refreshValidationUI() {
+            allIssues = collectValidation();
+            if (allIssues.length === 0) {
+                statusBtn.className = 'mc-status-btn mc-status-ok';
+                statusBtn.textContent = '✔ Alles ok';
+            } else {
+                statusBtn.className = 'mc-status-btn mc-status-warn';
+                statusBtn.textContent = '⚠ ' + allIssues.length + ' Hinweis' + (allIssues.length !== 1 ? 'e' : '');
+            }
+        }
 
-        const cancelBtn = document.createElement('button');
-        cancelBtn.textContent = 'Abbrechen';
-        Object.assign(cancelBtn.style, {
-            cursor: 'pointer', padding: '6px 10px', border: 'none',
-            borderRadius: '4px', backgroundColor: '#555', color: '#fff', marginRight: '10px'
+        let issuePopoverOpen = false;
+        statusBtn.addEventListener('click', () => {
+            issuePopoverOpen = !issuePopoverOpen;
+            if (!issuePopoverOpen || allIssues.length === 0) {
+                issuePop.classList.remove('mc-issue-pop--open');
+                issuePop.innerHTML = '';
+                return;
+            }
+            issuePop.innerHTML = '<strong>Validierung</strong><ul>'
+                + allIssues.slice(0, 40).map(t => '<li>' + t.replace(/</g, '&lt;') + '</li>').join('')
+                + (allIssues.length > 40 ? '<li>…</li>' : '')
+                + '</ul>';
+            issuePop.classList.add('mc-issue-pop--open');
         });
-        cancelBtn.addEventListener('click', removeOverlay);
 
-        const saveBtn = document.createElement('button');
-        saveBtn.textContent = 'Speichern';
-        Object.assign(saveBtn.style, {
-            cursor: 'pointer', padding: '6px 10px', border: 'none',
-            borderRadius: '4px', backgroundColor: '#2196F3', color: '#fff'
+        popup.addEventListener('click', e => {
+            if (!issuePop.contains(e.target) && e.target !== statusBtn) {
+                issuePop.classList.remove('mc-issue-pop--open');
+            }
         });
-        saveBtn.addEventListener('click', () => {
-            const issues = validate();
-            if (issues.length > 0) {
-                if (!confirm('Es gibt Hinweise:\n\n' + issues.slice(0, 8).join('\n') + (issues.length > 8 ? `\n…und ${issues.length - 8} weitere` : '') + '\n\nTrotzdem speichern?')) {
-                    validationBar.textContent = issues.join(' • ');
+
+        function updateTabBadges() {
+            const { a, t } = countAusaktiv();
+            if (tabButtons[0]) {
+                tabButtons[0].labelSpan.textContent = 'Ausstattung';
+                tabButtons[0].badge.textContent = '[' + a + ' / ' + t + ']';
+            }
+            const ta = aktuelleTechKonfigurationen.filter(i => i.aktiv).length;
+            const tt = aktuelleTechKonfigurationen.length;
+            if (tabButtons[1]) {
+                tabButtons[1].labelSpan.textContent = 'Tech-Daten';
+                tabButtons[1].badge.textContent = '[' + ta + ' / ' + tt + ']';
+            }
+            const tm = aktuelleMergeGruppen.length;
+            if (tabButtons[2]) {
+                tabButtons[2].labelSpan.textContent = 'Merge-Gruppen';
+                tabButtons[2].badge.textContent = '[' + tm + ']';
+            }
+            if (tabButtons[3]) {
+                tabButtons[3].labelSpan.textContent = 'Import / Export';
+                tabButtons[3].badge.textContent = '';
+            }
+        }
+
+        /** Save */
+        saveBtn.addEventListener('click', async () => {
+            const issuesTxt = collectValidation();
+            if (issuesTxt.length > 0) {
+                const preview = issuesTxt.slice(0, 10).join('\n') + (issuesTxt.length > 10 ? '\n…und ' + (issuesTxt.length - 10) + ' weitere' : '');
+                const okSave = await confirmAsync('Es gibt Hinweise:\n\n' + preview + '\n\nTrotzdem speichern?');
+                if (!okSave) {
+                    refreshValidationUI();
                     return;
                 }
             }
             aktuelleAusstattungsKonfig.sort((a, b) => (a.anzeige || '').trim().localeCompare((b.anzeige || '').trim()));
-            aktuelleMergeGruppen.sort((a, b) => (a.basis || '').localeCompare(b.basis || ''));
+            aktuelleMergeGruppen.sort((x, y) => (x.basis || '').localeCompare(y.basis || ''));
 
             speichereConfig(STORAGE_KEYS.config, aktuelleAusstattungsKonfig);
             speichereConfig(STORAGE_KEYS.techConfig, aktuelleTechKonfigurationen);
@@ -1405,19 +2471,27 @@
             techDataKonfigurationen = aktuelleTechKonfigurationen;
             mergeGruppenConfig = aktuelleMergeGruppen;
 
-            removeOverlay();
-            clearResults();
-            trigger();
+            saveBtn.disabled = true;
+            saveBtn.textContent = '✔ Gespeichert';
+            setTimeout(() => {
+                removeOverlay();
+                clearResults();
+                trigger();
+            }, 800);
         });
 
-        buttonBar.appendChild(cancelBtn);
-        buttonBar.appendChild(saveBtn);
-        popup.appendChild(buttonBar);
+        refreshExportArea();
+        renderAusstattung();
+        renderTechData();
+        renderMergeConfig();
+        updateTabBadges();
+        refreshValidationUI();
+        syncUndoBtn();
 
-        overlay.appendChild(popup);
         requestAnimationFrame(() => {
             overlay.style.opacity = '1';
             popup.style.opacity = '1';
+            tabButtons[0].btn.focus();
         });
     }
 
@@ -1431,12 +2505,31 @@
         if (!targetDiv) return;
         const button = document.createElement('button');
         button.id = 'mobilede-config-btn';
-        button.innerText = 'Konfiguration';
+        button.type = 'button';
+        button.setAttribute('aria-label', 'Ausstattungssuche konfigurieren');
+        button.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" style="vertical-align:-3px;margin-right:6px"><path fill="currentColor" d="M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z"/></svg><span>Konfiguration</span>';
         Object.assign(button.style, {
-            cursor: 'pointer', padding: '8px 12px', border: 'none',
-            borderRadius: '4px', background: '#333', color: '#fff',
-            fontFamily: 'Arial, sans-serif',
-            boxShadow: '0px 2px 5px rgba(0,0,0,0.3)'
+            cursor: 'pointer',
+            padding: '9px 14px',
+            border: '1px solid rgba(255,255,255,.12)',
+            borderRadius: '8px',
+            background: 'linear-gradient(180deg,#3a3d46,#2e3138)',
+            color: '#f0f1f3',
+            fontFamily: 'system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif',
+            fontSize: '13px',
+            fontWeight: '500',
+            boxShadow: '0 2px 8px rgba(0,0,0,.25)',
+            transition: 'filter .15s, box-shadow .15s',
+            display: 'inline-flex',
+            alignItems: 'center'
+        });
+        button.addEventListener('mouseenter', () => {
+            button.style.filter = 'brightness(1.08)';
+            button.style.boxShadow = '0 4px 14px rgba(0,0,0,.35)';
+        });
+        button.addEventListener('mouseleave', () => {
+            button.style.filter = '';
+            button.style.boxShadow = '0 2px 8px rgba(0,0,0,.25)';
         });
         button.addEventListener('click', oeffneKonfigPopup);
         targetDiv.appendChild(button);
