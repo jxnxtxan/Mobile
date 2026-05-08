@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mobile.de Ausstattungssuche mit modernem Popup & Import/Export (Generalisiertes Merging mit Merge-Konfiguration)
 // @namespace    http://tampermonkey.net/
-// @version      2.2.5
+// @version      2.4.1
 // @author       jxnxtxan
 // @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de. Token-basierte Match-Engine mit Wortgrenzen, Quellen-Gewichtung (Feature-Liste vs. Beschreibung), SPA-Robustheit, Konfig-Popup mit Filter, Drag&Drop, Reset, Backup und Schema-Versionierung.
 // @match        http://suchen.mobile.de/fahrzeuge/details.html*
@@ -24,9 +24,38 @@
         config:        'mobilede_config',
         techConfig:    'mobilede_techconfig',
         mergeGroups:   'mobilede_mergeGruppen',
+        featureFlags:  'mobilede_feature_flags',
         version:       'mobilede_config_version',
         backupPrefix:  'mobilede_config_backup_'
     };
+
+    // ============================================================
+    // Feature-Flag-Registry (erweiterbar)
+    // - Neue Optionen einfach unten anhängen, das Config-Tab rendert
+    //   sie automatisch und Defaults werden vorwärts-kompatibel
+    //   in bestehende User-Configs gemerged.
+    // ============================================================
+    const FEATURE_FLAG_DEFINITIONS = [
+        {
+            key: 'mapsLink',
+            title: 'Standort als Google-Maps-Link',
+            description: 'Macht Standort-Texte auf der Detailseite (z.B. „DE-92690 Pressath") anklickbar. Ein Klick öffnet Google Maps mit der Adresse als Suche.',
+            default: true
+        }
+    ];
+    function featureFlagsDefault() {
+        const obj = {};
+        FEATURE_FLAG_DEFINITIONS.forEach(d => { obj[d.key] = !!d.default; });
+        return obj;
+    }
+    function ladeFeatureFlags() {
+        const stored = ladeConfig(STORAGE_KEYS.featureFlags);
+        const defaults = featureFlagsDefault();
+        if (!stored || typeof stored !== 'object') return defaults;
+        // Defaults für neu hinzugekommene Flags ergänzen, unbekannte Keys
+        // bleiben erhalten (zukunftskompatibel).
+        return { ...defaults, ...stored };
+    }
 
     // ============================================================
     // 1) GM_*-Speicherhilfen
@@ -291,6 +320,7 @@
     let suchKonfigurationen     = ladeConfig(STORAGE_KEYS.config)      || suchKonfigurationenDefault;
     let techDataKonfigurationen = ladeConfig(STORAGE_KEYS.techConfig)  || techDataKonfigurationenDefault;
     let mergeGruppenConfig      = ladeConfig(STORAGE_KEYS.mergeGroups) || mergeGruppenConfigDefault;
+    let featureFlags            = ladeFeatureFlags();
 
     // ============================================================
     // 4) Textaufbereitung & Tokenisierung
@@ -808,7 +838,87 @@
         clearTimeout(triggerTimer);
         triggerTimer = setTimeout(() => {
             try { ergebnisHinzufuegen(); } catch (e) { console.error(e); }
+            try { verlinkeStandortAufGoogleMaps(); } catch (e) { console.error(e); }
         }, 300);
+    }
+
+    /**
+     * Macht Standort-Texte (z.B. „DE-92690 Pressath", „AT-1010 Wien") überall
+     * auf der Seite klickbar: Klick öffnet Google Maps mit der Adresse.
+     * Robust gegen mobile.de Class-Name-Änderungen via Pattern-Match auf den
+     * Textinhalt einzelner Blatt-Elemente (kein Scope-Restrictor, damit auch
+     * Standorte außerhalb der Aktions-Box `.Va7Gr` erfasst werden, z.B. in
+     * `aside.iKWwq` der Verkäufer-Karte).
+     *
+     * Per Feature-Flag (`featureFlags.mapsLink`) abschaltbar – die schon
+     * angehängten Click-Listener prüfen den Flag-Wert zur Klickzeit erneut,
+     * damit Toggles auch ohne Re-Render sofort greifen.
+     */
+    function verlinkeStandortAufGoogleMaps() {
+        const enabled = !!(featureFlags && featureFlags.mapsLink !== false);
+        const re = /^[A-Z]{2}-\d{4,5}\s+\S.*$/;
+        const candidates = document.querySelectorAll('div, span, p, address');
+        const matched = [];
+        for (const el of candidates) {
+            if (!el || !el.dataset) continue;
+            if (el.children && el.children.length > 0) continue;
+            const txt = (el.textContent || '').trim();
+            if (txt.length < 6 || txt.length > 80) continue;
+            if (!re.test(txt)) continue;
+            if (el.closest && el.closest('#mobilede-config-popup')) continue;
+            matched.push({ el, txt });
+        }
+
+        if (!enabled) {
+            matched.forEach(({ el }) => {
+                if (el.dataset.mobiledeStandort !== '1') return;
+                el.style.cursor = '';
+                el.style.textDecoration = '';
+                el.style.textDecorationStyle = '';
+                el.style.textUnderlineOffset = '';
+                el.style.opacity = '';
+                el.removeAttribute('role');
+                el.removeAttribute('tabindex');
+                el.removeAttribute('title');
+            });
+            return;
+        }
+
+        matched.forEach(({ el, txt }) => {
+            el.style.cursor = 'pointer';
+            el.style.textDecoration = 'underline';
+            el.style.textDecorationStyle = 'dotted';
+            el.style.textUnderlineOffset = '3px';
+            el.title = 'In Google Maps öffnen: ' + txt;
+            el.setAttribute('role', 'link');
+            el.setAttribute('tabindex', '0');
+            if (el.dataset.mobiledeStandort === '1') return;
+            el.dataset.mobiledeStandort = '1';
+            el.addEventListener('mouseenter', () => {
+                if (!featureFlags || featureFlags.mapsLink === false) return;
+                el.style.textDecorationStyle = 'solid';
+                el.style.opacity = '0.85';
+            });
+            el.addEventListener('mouseleave', () => {
+                el.style.textDecorationStyle = 'dotted';
+                el.style.opacity = '';
+            });
+            const open = () => {
+                const url = 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(txt);
+                window.open(url, '_blank', 'noopener,noreferrer');
+            };
+            el.addEventListener('click', e => {
+                if (!featureFlags || featureFlags.mapsLink === false) return;
+                e.preventDefault();
+                e.stopPropagation();
+                if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+                open();
+            }, true);
+            el.addEventListener('keydown', e => {
+                if (!featureFlags || featureFlags.mapsLink === false) return;
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+            });
+        });
     }
 
     function startObserver() {
@@ -881,6 +991,15 @@
 <ul>
 <li><strong>Export aktualisieren</strong> generiert das aktuelle JSON. <strong>Kopieren</strong> legt es in die Zwischenablage; <strong>Herunterladen</strong> speichert eine Datei <code>mobilede-config-YYYY-MM-DD.json</code>.</li>
 <li><strong>Import</strong>: JSON entweder per <strong>Drag&amp;Drop</strong> der Datei auf die Drop-Zone oder direkt in die Textarea einfügen. <strong>Importieren</strong> überschreibt die aktuelle Konfiguration; ein automatisches Backup wird vorher angelegt und kann per <strong>Rückgängig</strong> im Footer zurückgeholt werden.</li>
+</ul>`],
+        ['config', `
+<h4>Was macht das?</h4>
+<p>Hier schaltest du Zusatz-Features des Skripts global ein oder aus. Änderungen werden mit <strong>Speichern</strong> übernommen und greifen sofort – auch ohne Seiten-Reload.</p>
+<h4>So bedienst du es:</h4>
+<ul>
+<li>Jede Karte beschreibt ein Feature und besitzt einen Toggle.</li>
+<li>Beim Deaktivieren werden bereits aktive Manipulationen (z.B. die Maps-Verlinkung) auf der gerade geöffneten Detailseite optisch zurückgenommen.</li>
+<li>Neue Features werden automatisch mit ihren Standardwerten ergänzt; bestehende Einstellungen bleiben erhalten.</li>
 </ul>`]
     ]);
 
@@ -893,6 +1012,7 @@
         let aktuelleAusstattungsKonfig = JSON.parse(JSON.stringify(suchKonfigurationen));
         let aktuelleTechKonfigurationen = JSON.parse(JSON.stringify(techDataKonfigurationen));
         let aktuelleMergeGruppen = JSON.parse(JSON.stringify(mergeGruppenConfig));
+        let aktuelleFeatureFlags = { ...featureFlagsDefault(), ...(featureFlags || {}) };
 
         let dirty = false;
         let activeTabIndex = 0;
@@ -901,9 +1021,9 @@
         const undoStack = [];
         /** Max. eine Ausstattungs-Card mit geöffnetem Details-Panel — Array-Index in `aktuelleAusstattungsKonfig`. */
         let expandedAusstattungIndex = null;
-        /** Hilfe-Panel je Tab (Ausstattung, Tech, Merge, Import/Export) — vermeidet Zustandsverlust beim Tab-Wechsel. */
-        const helpExpandedByTab = { aus: false, tech: false, merge: false, ie: false };
-        const SCRIPT_UI_VERSION = '2.2.5';
+        /** Hilfe-Panel je Tab (Ausstattung, Tech, Merge, Import/Export, Config) — vermeidet Zustandsverlust beim Tab-Wechsel. */
+        const helpExpandedByTab = { aus: false, tech: false, merge: false, ie: false, config: false };
+        const SCRIPT_UI_VERSION = '2.4.1';
 
         const prevBodyOverflow = document.body.style.overflow;
         document.body.style.overflow = 'hidden';
@@ -958,6 +1078,7 @@
 }
 .mc-tab:focus{outline:2px solid var(--mc-accent);outline-offset:2px;}
 .mc-tab--active{border-color:#5c6bc0;background:#30334a;color:#fff;}
+.mc-tab--config{margin-left:auto;}
 .mc-tab-badge{opacity:.85;font-size:12px;margin-left:4px;}
 .mc-popup__scroll{flex:1;min-height:0;overflow-y:auto;padding:12px 16px 8px;}
 .mc-panel{display:none;flex-direction:column;min-height:0;gap:8px;height:100%;}
@@ -971,6 +1092,8 @@
 .mc-toolbar__row--top{}
 .mc-toolbar__row--bottom{justify-content:space-between;}
 .mc-toolbar__row--bottom > .mc-btn--danger{margin-left:auto;}
+.mc-toolbar__row--config > .mc-btn--danger{margin-left:auto;}
+.mc-toolbar__row--config .mc-toolbar-help-slot{margin-left:0;}
 .mc-toolbar-toggle{display:inline-flex;align-items:center;gap:8px;padding:3px 14px 3px 5px;
   background:rgba(255,255,255,.04);border:1px solid var(--mc-border);border-radius:999px;
   font-size:13px;color:var(--mc-text);cursor:pointer;user-select:none;align-self:center;
@@ -1063,6 +1186,16 @@
 }
 .mc-card__main-row--aus .mc-pill-row{min-width:0;flex-shrink:1;}
 .mc-card__main-row--aus:has(.mc-card__title-input:focus) .mc-pill-row{gap:4px;}
+.mc-card__main-row--feature{align-items:center;gap:14px;}
+.mc-feature-card{padding:14px 16px;}
+.mc-feature-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:4px;}
+.mc-feature-title{font-weight:600;font-size:15px;line-height:1.25;}
+.mc-feature-desc{font-size:12.5px;color:var(--mc-muted);line-height:1.45;}
+.mc-feature-status{
+  font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--mc-muted);
+  padding:3px 8px;border-radius:999px;border:1px solid var(--mc-border);background:rgba(0,0,0,.18);
+}
+.mc-feature-status--on{color:#bfe5c5;border-color:#3e8e4a;background:rgba(76,175,80,.18);}
 .mc-pill-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
 .mc-pill{
   display:inline-flex;align-items:center;gap:4px;border:1px solid var(--mc-border);border-radius:999px;
@@ -1465,11 +1598,15 @@
         panelMerge.className = 'mc-panel';
         const panelIE = document.createElement('div');
         panelIE.className = 'mc-panel';
+        const panelConfig = document.createElement('div');
+        panelConfig.className = 'mc-panel';
+        panelConfig.setAttribute('role', 'tabpanel');
 
         scroll.appendChild(panelAus);
         scroll.appendChild(panelTech);
         scroll.appendChild(panelMerge);
         scroll.appendChild(panelIE);
+        scroll.appendChild(panelConfig);
 
         const footWrap = document.createElement('div');
         footWrap.style.position = 'relative';
@@ -1511,6 +1648,7 @@
             const b = document.createElement('button');
             b.type = 'button';
             b.className = 'mc-tab' + (idx === 0 ? ' mc-tab--active' : '');
+            if (label === 'Config') b.classList.add('mc-tab--config');
             b.setAttribute('role', 'tab');
             b.setAttribute('aria-selected', idx === 0 ? 'true' : 'false');
             b.dataset.tabIndex = String(idx);
@@ -1529,8 +1667,9 @@
         mkTab('Tech-Daten', 1);
         mkTab('Merge-Gruppen', 2);
         mkTab('Import / Export', 3);
+        mkTab('Config', 4);
 
-        const panels = [panelAus, panelTech, panelMerge, panelIE];
+        const panels = [panelAus, panelTech, panelMerge, panelIE, panelConfig];
 
         function setActiveTab(idx) {
             activeTabIndex = idx;
@@ -2302,7 +2441,8 @@
                 __version: SCHEMA_VERSION,
                 suchKonfigurationen: aktuelleAusstattungsKonfig,
                 techDataKonfigurationen: aktuelleTechKonfigurationen,
-                mergeGruppenConfig: aktuelleMergeGruppen
+                mergeGruppenConfig: aktuelleMergeGruppen,
+                featureFlags: aktuelleFeatureFlags
             };
         }
 
@@ -2417,10 +2557,14 @@
                 if (Array.isArray(obj.suchKonfigurationen)) aktuelleAusstattungsKonfig = obj.suchKonfigurationen;
                 if (Array.isArray(obj.techDataKonfigurationen)) aktuelleTechKonfigurationen = obj.techDataKonfigurationen;
                 if (Array.isArray(obj.mergeGruppenConfig)) aktuelleMergeGruppen = obj.mergeGruppenConfig;
+                if (obj.featureFlags && typeof obj.featureFlags === 'object') {
+                    aktuelleFeatureFlags = { ...featureFlagsDefault(), ...obj.featureFlags };
+                }
                 markDirty();
                 renderAusstattung();
                 renderTechData();
                 renderMergeConfig();
+                renderConfig();
                 refreshExportArea();
                 showToast('Import angewendet. Backup-Zeitstempel: ' + ts + '. Bitte Speichern klicken.', 'success');
             } catch (e2) {
@@ -2439,6 +2583,74 @@
         panelIE.appendChild(ieToolbar);
         panelIE.appendChild(ieRow);
         installKonfigTabHelp('ie', 'mc-konfig-help-ie', 'Hilfe zum Tab Import / Export', 'Hilfe zu Import und Export', ieToolbar, null, panelIE, ieRow);
+
+        /** --- Config (Feature-Flags) --- */
+        const configToolbar = document.createElement('div');
+        configToolbar.className = 'mc-toolbar';
+        const configTopRow = document.createElement('div');
+        configTopRow.className = 'mc-toolbar__row mc-toolbar__row--top mc-toolbar__row--config';
+        const btnResetFlags = mkBtn('danger', 'Reset Defaults', async () => {
+            const ok = await confirmAsync('Alle Feature-Flags auf Standard zurücksetzen?');
+            if (!ok) return;
+            aktuelleFeatureFlags = featureFlagsDefault();
+            markDirty();
+            renderConfig();
+            showToast('Feature-Flags zurückgesetzt', 'success');
+        });
+        configTopRow.appendChild(btnResetFlags);
+        configToolbar.appendChild(configTopRow);
+
+        const configContainer = document.createElement('div');
+        panelConfig.appendChild(configToolbar);
+        panelConfig.appendChild(configContainer);
+        installKonfigTabHelp('config', 'mc-konfig-help-config', 'Hilfe zum Tab Config', 'Hilfe zu Config', configTopRow, null, panelConfig, configContainer);
+
+        function renderConfig() {
+            configContainer.innerHTML = '';
+            if (!FEATURE_FLAG_DEFINITIONS.length) {
+                configContainer.appendChild(mkEmptyState('Aktuell sind keine Feature-Flags definiert.'));
+                return;
+            }
+            FEATURE_FLAG_DEFINITIONS.forEach(def => {
+                const card = document.createElement('div');
+                card.className = 'mc-card mc-feature-card';
+
+                const row = document.createElement('div');
+                row.className = 'mc-card__main-row mc-card__main-row--feature';
+
+                const txtCol = document.createElement('div');
+                txtCol.className = 'mc-feature-text';
+                const title = document.createElement('div');
+                title.className = 'mc-feature-title';
+                title.textContent = def.title;
+                const desc = document.createElement('div');
+                desc.className = 'mc-feature-desc';
+                desc.textContent = def.description || '';
+                txtCol.appendChild(title);
+                if (def.description) txtCol.appendChild(desc);
+
+                const tw = document.createElement('div');
+                tw.className = 'mc-toggle-wrap';
+                const current = aktuelleFeatureFlags[def.key];
+                const toggleEl = mkToggle(current !== false, v => {
+                    aktuelleFeatureFlags[def.key] = v;
+                    markDirty();
+                    statusLbl.textContent = v ? 'Aktiv' : 'Aus';
+                    statusLbl.classList.toggle('mc-feature-status--on', v);
+                    updateTabBadges();
+                });
+                const statusLbl = document.createElement('span');
+                statusLbl.className = 'mc-feature-status' + ((current !== false) ? ' mc-feature-status--on' : '');
+                statusLbl.textContent = (current !== false) ? 'Aktiv' : 'Aus';
+                tw.appendChild(statusLbl);
+                tw.appendChild(toggleEl);
+
+                row.appendChild(txtCol);
+                row.appendChild(tw);
+                card.appendChild(row);
+                configContainer.appendChild(card);
+            });
+        }
 
         /** Validation + footer status */
         let allIssues = [];
@@ -2510,6 +2722,12 @@
                 tabButtons[3].labelSpan.textContent = 'Import / Export';
                 tabButtons[3].badge.textContent = '';
             }
+            if (tabButtons[4]) {
+                const fOn = FEATURE_FLAG_DEFINITIONS.filter(d => aktuelleFeatureFlags[d.key] !== false).length;
+                const fAll = FEATURE_FLAG_DEFINITIONS.length;
+                tabButtons[4].labelSpan.textContent = 'Config';
+                tabButtons[4].badge.textContent = '[' + fOn + ' / ' + fAll + ']';
+            }
         }
 
         /** Save */
@@ -2529,11 +2747,13 @@
             speichereConfig(STORAGE_KEYS.config, aktuelleAusstattungsKonfig);
             speichereConfig(STORAGE_KEYS.techConfig, aktuelleTechKonfigurationen);
             speichereConfig(STORAGE_KEYS.mergeGroups, aktuelleMergeGruppen);
+            speichereConfig(STORAGE_KEYS.featureFlags, aktuelleFeatureFlags);
             speichereConfig(STORAGE_KEYS.version, SCHEMA_VERSION);
 
             suchKonfigurationen = aktuelleAusstattungsKonfig;
             techDataKonfigurationen = aktuelleTechKonfigurationen;
             mergeGruppenConfig = aktuelleMergeGruppen;
+            featureFlags = aktuelleFeatureFlags;
 
             saveBtn.disabled = true;
             saveBtn.textContent = '✔ Gespeichert';
@@ -2548,6 +2768,7 @@
         renderAusstattung();
         renderTechData();
         renderMergeConfig();
+        renderConfig();
         updateTabBadges();
         refreshValidationUI();
         syncUndoBtn();
