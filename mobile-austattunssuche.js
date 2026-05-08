@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mobile.de Ausstattungssuche mit modernem Popup & Import/Export (Generalisiertes Merging mit Merge-Konfiguration)
 // @namespace    http://tampermonkey.net/
-// @version      2.1.14
+// @version      2.2.3
 // @author       jxnxtxan
 // @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de. Token-basierte Match-Engine mit Wortgrenzen, Quellen-Gewichtung (Feature-Liste vs. Beschreibung), SPA-Robustheit, Konfig-Popup mit Filter, Drag&Drop, Reset, Backup und Schema-Versionierung.
 // @match        http://suchen.mobile.de/fahrzeuge/details.html*
@@ -19,7 +19,7 @@
     // ============================================================
     // Konstanten / Schema
     // ============================================================
-    const SCHEMA_VERSION = 4;
+    const SCHEMA_VERSION = 5;
     const STORAGE_KEYS = {
         config:        'mobilede_config',
         techConfig:    'mobilede_techconfig',
@@ -63,7 +63,7 @@
         { begriffe: ['ambiente beleuchtung', 'ambiente licht', 'stimmungslicht'], anzeige: 'Ambiente-Beleuchtung', aktiv: true },
         { begriffe: ['scheiben abgedunk', 'abgedunk scheib'], anzeige: 'Abgedunkelte Scheiben', aktiv: true },
         { begriffe: ['akustikverglasung', 'akustik verglasung', 'frontscheibe akus'], anzeige: 'Akustikverglasung', aktiv: true },
-        { begriffe: ['seitenscheibe akus', 'türscheiben akus', 'seitenscheibe verglasung'], anzeige: 'Seitenscheiben Akustikverglasung', aktiv: true },
+        { begriffe: ['seitenscheibe akus', 'türscheiben akus', 'seitenscheibe verglasung'], anzeige: 'Seitenscheiben Akustikverglasung', aktiv: true, nurInFeatures: true },
         { begriffe: ['adapt kurv licht', 'kurvenlicht adaptiv'], anzeige: 'Adaptives Kurvenlicht', aktiv: false },
         { begriffe: ['tempomat abstand', 'adapt temp', 'acc'], anzeige: 'Abstandstempomat', farbe: 'orange', aktiv: true },
         { begriffe: ['abstands warn', 'distance warn'], anzeige: 'Abstandswarner', aktiv: false },
@@ -77,7 +77,7 @@
         { begriffe: ['bang & olufsen', 'b&o', 'bang olufsen'], anzeige: 'Bang & Olufsen Sound System', farbe: 'red', aktiv: true, nurInFeatures: true },
         { begriffe: ['beats'], anzeige: 'Beats Sound System', farbe: 'red', aktiv: true, nurInFeatures: true },
         { begriffe: ['blendfrei fernlicht', 'anti blend licht', 'fernlicht assist', 'auto fernlicht'], anzeige: 'Fernlicht Assistent', farbe: 'orange', aktiv: true },
-        { begriffe: ['brems assist', 'brake assist'], anzeige: 'Bremsassistent', aktiv: true },
+        { begriffe: ['brems assist', 'brake assist'], verboten: ['notbrems', 'not brems'], anzeige: 'Bremsassistent', aktiv: true },
         { begriffe: ['berganfahrassist', 'berganfahr', 'hill start', 'hill hold', 'anfahrassist'], anzeige: 'Berganfahrassistent', aktiv: false },
         { begriffe: ['business paket professional', 'business paket'], anzeige: 'Business Paket', aktiv: true },
         { begriffe: ['burmester'], anzeige: 'Burmester Sound System', farbe: 'red', aktiv: true, nurInFeatures: true },
@@ -191,6 +191,44 @@
         return userConfig;
     }
 
+    /**
+     * Korrekturen, die false-positive Treffer in bekannten Einträgen
+     * verhindern. Werden additiv auf User-Configs angewandt:
+     *  - nurInFeatures: true wird gesetzt, wenn aktuell nicht true.
+     *  - verboten: Listen werden zur bestehenden verboten-Liste hinzugefügt
+     *    (Duplikate bereinigt). Vom User selbst entfernte Einträge können
+     *    so wiederkommen - das ist gewollt, damit Match-Korrekturen greifen.
+     * Key: lowercase, getrimmtes Anzeige-Feld.
+     */
+    const ANZEIGE_PROPERTY_UPDATES = {
+        'seitenscheiben akustikverglasung': { nurInFeatures: true },
+        'bremsassistent': { verboten: ['notbrems', 'not brems'] }
+    };
+
+    function applyAnzeigePropertyUpdates(userConfig) {
+        if (!Array.isArray(userConfig)) return userConfig;
+        let touched = 0;
+        userConfig.forEach(item => {
+            const key = (item.anzeige || '').trim().toLowerCase();
+            const upd = ANZEIGE_PROPERTY_UPDATES[key];
+            if (!upd) return;
+            if (upd.nurInFeatures === true && item.nurInFeatures !== true) {
+                item.nurInFeatures = true;
+                touched++;
+            }
+            if (Array.isArray(upd.verboten) && upd.verboten.length > 0) {
+                const existing = new Set((item.verboten || []).map(v => String(v).toLowerCase().trim()));
+                const additions = upd.verboten.filter(v => !existing.has(String(v).toLowerCase().trim()));
+                if (additions.length > 0) {
+                    item.verboten = [...(item.verboten || []), ...additions];
+                    touched++;
+                }
+            }
+        });
+        if (touched > 0) console.info(`mobilede: ${touched} Match-Korrektur(en) auf Default-Einträge angewandt.`);
+        return userConfig;
+    }
+
     function addMissingDefaultEntries(userConfig, defaults) {
         if (!Array.isArray(userConfig)) return userConfig;
         const userKeys = new Set(
@@ -229,11 +267,12 @@
         const stored = ladeConfig(STORAGE_KEYS.version);
         if (stored === SCHEMA_VERSION) return;
 
-        // Ausstattungs-Config: rename, union begriffe, add missing
+        // Ausstattungs-Config: rename, union begriffe, property-updates, add missing
         const userConfig = ladeConfig(STORAGE_KEYS.config);
         if (Array.isArray(userConfig)) {
             let next = applyAnzeigeRenames(userConfig);
             next = unionBegriffeMitDefaults(next, suchKonfigurationenDefault);
+            next = applyAnzeigePropertyUpdates(next);
             next = addMissingDefaultEntries(next, suchKonfigurationenDefault);
             speichereConfig(STORAGE_KEYS.config, next);
         }
@@ -674,8 +713,7 @@
             boxShadow: '0px 2px 4px rgba(0, 0, 0, 0.1)',
             fontSize: '14px',
             lineHeight: '1.5',
-            display: 'flex',
-            flexWrap: 'wrap'
+            display: 'block'
         });
         article.appendChild(ergebnisBereich);
 
@@ -687,16 +725,39 @@
         ergebnisBereich.appendChild(title);
 
         if (gefundeneTexte.length > 0) {
-            gefundeneTexte.forEach(item => {
+            const columns = document.createElement('div');
+            Object.assign(columns.style, {
+                display: 'grid',
+                gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                columnGap: '24px',
+                alignItems: 'start'
+            });
+
+            const leftColumn = document.createElement('div');
+            const rightColumn = document.createElement('div');
+            [leftColumn, rightColumn].forEach(col => {
+                Object.assign(col.style, {
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '2px',
+                    minWidth: '0'
+                });
+            });
+
+            gefundeneTexte.forEach((item, index) => {
                 const el = document.createElement('div');
                 const isLow = item.confidence === 'low';
-                el.style.width = '50%';
+                el.style.minWidth = '0';
                 // Tooltip + Help-Cursor liegen NUR auf dem inneren Span,
                 // sodass der Cursor außerhalb des Textes normal bleibt.
                 const span = document.createElement('span');
                 span.textContent = `- ${item.anzeige}${isLow ? ' *' : ''}`;
                 span.style.color = item.farbe;
                 span.style.cursor = 'help';
+                span.style.overflowWrap = 'anywhere';
+                span.style.display = 'inline-block';
+                span.style.paddingLeft = '0.6em';
+                span.style.textIndent = '-0.6em';
                 const sourceLabel = isLow
                     ? `Nur in Beschreibung gefunden (Quelle: ${item.source})`
                     : `Quelle: ${item.source}`;
@@ -708,8 +769,11 @@
                     span.style.opacity = '0.85';
                 }
                 el.appendChild(span);
-                ergebnisBereich.appendChild(el);
+                (index % 2 === 0 ? leftColumn : rightColumn).appendChild(el);
             });
+            columns.appendChild(leftColumn);
+            columns.appendChild(rightColumn);
+            ergebnisBereich.appendChild(columns);
             const hasLow = gefundeneTexte.some(i => i.confidence === 'low');
             if (hasLow) {
                 const legend = document.createElement('div');
@@ -839,7 +903,7 @@
         let expandedAusstattungIndex = null;
         /** Hilfe-Panel je Tab (Ausstattung, Tech, Merge, Import/Export) — vermeidet Zustandsverlust beim Tab-Wechsel. */
         const helpExpandedByTab = { aus: false, tech: false, merge: false, ie: false };
-        const SCRIPT_UI_VERSION = '2.1.14';
+        const SCRIPT_UI_VERSION = '2.2.3';
 
         const prevBodyOverflow = document.body.style.overflow;
         document.body.style.overflow = 'hidden';
