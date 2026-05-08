@@ -19,7 +19,7 @@
     // ============================================================
     // Konstanten / Schema
     // ============================================================
-    const SCHEMA_VERSION = 3;
+    const SCHEMA_VERSION = 4;
     const STORAGE_KEYS = {
         config:        'mobilede_config',
         techConfig:    'mobilede_techconfig',
@@ -73,11 +73,12 @@
         { begriffe: ['apple carplay', 'apple car play'], anzeige: 'Apple Carplay', aktiv: true },
         { begriffe: ['android auto'], anzeige: 'Android Auto', aktiv: true },
         { begriffe: ['außenspiegel elek verst', 'elek spiegel'], anzeige: 'Außenspiegel elektr. verstellbar', aktiv: true },
-        { begriffe: ['außenspiegel heizung', 'außenspiegel beheiz'], anzeige: 'Außenspiegel beheizbar', aktiv: true },
+        { begriffe: ['außenspiegel heizung', 'außenspiegel beheiz', 'außenspiegel heiz'], anzeige: 'Außenspiegel beheizbar', aktiv: true },
         { begriffe: ['bang & olufsen', 'b&o', 'bang olufsen'], anzeige: 'Bang & Olufsen Sound System', farbe: 'red', aktiv: true, nurInFeatures: true },
         { begriffe: ['beats'], anzeige: 'Beats Sound System', farbe: 'red', aktiv: true, nurInFeatures: true },
         { begriffe: ['blendfrei fernlicht', 'anti blend licht', 'fernlicht assist', 'auto fernlicht'], anzeige: 'Fernlicht Assistent', farbe: 'orange', aktiv: true },
         { begriffe: ['brems assist', 'brake assist'], anzeige: 'Bremsassistent', aktiv: true },
+        { begriffe: ['berganfahrassist', 'berganfahr', 'hill start', 'hill hold', 'anfahrassist'], anzeige: 'Berganfahrassistent', aktiv: false },
         { begriffe: ['business paket professional', 'business paket'], anzeige: 'Business Paket', aktiv: true },
         { begriffe: ['burmester'], anzeige: 'Burmester Sound System', farbe: 'red', aktiv: true, nurInFeatures: true },
         { begriffe: ['canton'], anzeige: 'Canton Sound System', farbe: 'red', aktiv: true, nurInFeatures: true },
@@ -94,6 +95,7 @@
         { begriffe: ['induktiv laden', 'induktion laden', 'induktionsladen', 'wireless charge'], anzeige: 'Induktionsladeschale für Smartphone (Wireless Charging)', aktiv: false },
         { begriffe: ['innenspiegel abblend', 'inne spiegel auto'], anzeige: 'Innenspiegel autom. abblendend', aktiv: true },
         { begriffe: ['lenkradheizung', 'beheizbares lenkrad', 'lenkrad heizung', 'lenkrad beheiz'], anzeige: 'Lenkradheizung', aktiv: true },
+        { begriffe: ['lederlenkrad', 'leder lenkrad'], anzeige: 'Lederlenkrad', aktiv: false },
         { begriffe: ['matrix led', 'matrix scheinwerfer', 'matrix beam', 'matrix licht'], anzeige: 'Matrix Scheinwerfer', farbe: 'red', aktiv: true },
         { begriffe: ['panorama', 'panoramadach', 'glas dach'], anzeige: 'Panoramadach', farbe: 'orange', aktiv: true },
         { begriffe: ['park assist', 'park hilfe'], anzeige: 'Parkassistent', aktiv: true },
@@ -101,7 +103,7 @@
         { begriffe: ['reifen druck', 'druck kontrolle'], anzeige: 'Reifendruck Kontrollsystem', aktiv: true },
         { begriffe: ['rückfahrkamera', 'rückfahrkamerasystem'], anzeige: 'Rückfahrkamera', aktiv: true },
         { begriffe: ['seiten airbag', 'airbag seite'], anzeige: 'Seitenairbag', aktiv: false },
-        { begriffe: ['spiegel klappbar', 'elek spiegel klapp'], anzeige: 'Seitenspiegel anklappbar', aktiv: true },
+        { begriffe: ['spiegel klappbar', 'elek spiegel klapp', 'außenspiegel anklappbar', 'außenspiegel klappbar'], anzeige: 'Außenspiegel anklappbar', aktiv: true },
         { begriffe: ['scheckheft gepflegt', 'scheckheft'], anzeige: 'Scheckheftgepflegt', farbe: 'red', aktiv: true },
         { begriffe: ['keyless', 'schlüssel frei', 'schlüssellose zentral'], anzeige: 'Schlüssellose Zentralverriegelung (Keyless)', farbe: 'orange', aktiv: true },
         { begriffe: ['servoschließung tür', 'soft close', 'softclose'], verboten: ['pedal', 'virtuell'], anzeige: 'Softclose', aktiv: true },
@@ -131,7 +133,7 @@
     ];
 
     const mergeGruppenConfigDefault = [
-        { basis: 'außenspiegel', order: ['elektr. verstellbar', 'klappbar', 'auto. abblend.'] }
+        { basis: 'außenspiegel', order: ['elektr. verstellbar', 'beheizbar', 'anklappbar', 'klappbar', 'auto. abblend.'] }
     ];
 
     // ============================================================
@@ -167,15 +169,82 @@
         return merged;
     }
 
+    /**
+     * Renamings für Anzeige-Texte zwischen Schema-Versionen.
+     * key (lowercase, getrimmt) -> neue Anzeige.
+     */
+    const ANZEIGE_RENAMES = {
+        'seitenspiegel anklappbar': 'Außenspiegel anklappbar'
+    };
+
+    function applyAnzeigeRenames(userConfig) {
+        if (!Array.isArray(userConfig)) return userConfig;
+        let renamed = 0;
+        userConfig.forEach(item => {
+            const key = (item.anzeige || '').trim().toLowerCase();
+            if (ANZEIGE_RENAMES[key]) {
+                item.anzeige = ANZEIGE_RENAMES[key];
+                renamed++;
+            }
+        });
+        if (renamed > 0) console.info(`mobilede: ${renamed} Anzeige-Text(e) auf neuen Default umbenannt.`);
+        return userConfig;
+    }
+
+    function addMissingDefaultEntries(userConfig, defaults) {
+        if (!Array.isArray(userConfig)) return userConfig;
+        const userKeys = new Set(
+            userConfig.map(c => (c.anzeige || '').trim().toLowerCase()).filter(Boolean)
+        );
+        const missing = defaults.filter(d => {
+            const k = (d.anzeige || '').trim().toLowerCase();
+            return k && !userKeys.has(k);
+        });
+        if (missing.length === 0) return userConfig;
+        console.info(
+            `mobilede: ${missing.length} neue Default-Eintraege ergaenzt: `
+            + missing.map(m => m.anzeige).join(', ')
+        );
+        return [...userConfig, ...missing.map(d => JSON.parse(JSON.stringify(d)))];
+    }
+
+    function migrateMergeGroups(userMerge, defaults) {
+        if (!Array.isArray(userMerge)) return userMerge;
+        let updated = false;
+        const byBasis = new Map(defaults.map(g => [g.basis.toLowerCase(), g]));
+        const merged = userMerge.map(g => {
+            const def = byBasis.get((g.basis || '').toLowerCase());
+            if (!def) return g;
+            const existingOrder = new Set((g.order || []).map(o => o.toLowerCase()));
+            const additions = (def.order || []).filter(o => !existingOrder.has(o.toLowerCase()));
+            if (additions.length === 0) return g;
+            updated = true;
+            return { ...g, order: [...(g.order || []), ...additions] };
+        });
+        if (updated) console.info('mobilede: Merge-Gruppen-Reihenfolge mit neuen Default-Modifiern ergaenzt.');
+        return merged;
+    }
+
     function migrateIfNeeded() {
         const stored = ladeConfig(STORAGE_KEYS.version);
         if (stored === SCHEMA_VERSION) return;
-        // v? -> v3: Default-Begriffe additiv in vorhandene User-Config mergen.
+
+        // Ausstattungs-Config: rename, union begriffe, add missing
         const userConfig = ladeConfig(STORAGE_KEYS.config);
         if (Array.isArray(userConfig)) {
-            const merged = unionBegriffeMitDefaults(userConfig, suchKonfigurationenDefault);
-            speichereConfig(STORAGE_KEYS.config, merged);
+            let next = applyAnzeigeRenames(userConfig);
+            next = unionBegriffeMitDefaults(next, suchKonfigurationenDefault);
+            next = addMissingDefaultEntries(next, suchKonfigurationenDefault);
+            speichereConfig(STORAGE_KEYS.config, next);
         }
+
+        // Merge-Gruppen: neue Order-Modifier additiv ergänzen
+        const userMerge = ladeConfig(STORAGE_KEYS.mergeGroups);
+        if (Array.isArray(userMerge)) {
+            const next = migrateMergeGroups(userMerge, mergeGruppenConfigDefault);
+            speichereConfig(STORAGE_KEYS.mergeGroups, next);
+        }
+
         speichereConfig(STORAGE_KEYS.version, SCHEMA_VERSION);
     }
     migrateIfNeeded();
