@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mobile.de Ausstattungssuche mit modernem Popup & Import/Export (Generalisiertes Merging mit Merge-Konfiguration)
 // @namespace    https://github.com/jxnxtxan/Mobile
-// @version      2.4.3
+// @version      2.5.1
 // @author       jxnxtxan
 // @description  Sucht bestimmte Ausstattungen & Technische Daten auf mobile.de. Token-basierte Match-Engine mit Wortgrenzen, Quellen-Gewichtung (Feature-Liste vs. Beschreibung), SPA-Robustheit, Konfig-Popup mit Filter, Drag&Drop, Reset, Backup und Schema-Versionierung.
 // @homepageURL  https://github.com/jxnxtxan/Mobile
@@ -26,7 +26,7 @@
     // ============================================================
     // Konstanten / Schema
     // ============================================================
-    const SCHEMA_VERSION = 5;
+    const SCHEMA_VERSION = 6;
     const STORAGE_KEYS = {
         config:        'mobilede_config',
         techConfig:    'mobilede_techconfig',
@@ -94,70 +94,93 @@
     //      Stelle im Token (selten nötig).
     // ============================================================
     const suchKonfigurationenDefault = [
-        { begriffe: ['4wd', 'allrad'], anzeige: 'Allrad', farbe: 'orange', aktiv: true },
-        { begriffe: ['quattro'], anzeige: 'Quattro / Allrad', farbe: 'orange', aktiv: true },
-        { begriffe: ['ambiente beleuchtung', 'ambiente licht', 'stimmungslicht'], anzeige: 'Ambiente-Beleuchtung', aktiv: true },
+        { begriffe: ['360 grad', '360 kamera', '360 cam', 'umfeld kamera', 'surround cam'], anzeige: '360 Grad Kamera', farbe: 'red', aktiv: true },
         { begriffe: ['scheiben abgedunk', 'abgedunk scheib'], anzeige: 'Abgedunkelte Scheiben', aktiv: true },
-        { begriffe: ['akustikverglasung', 'akustik verglasung', 'frontscheibe akus'], anzeige: 'Akustikverglasung', aktiv: true },
-        { begriffe: ['seitenscheibe akus', 'türscheiben akus', 'seitenscheibe verglasung'], anzeige: 'Seitenscheiben Akustikverglasung', aktiv: true, nurInFeatures: true },
-        { begriffe: ['adapt kurv licht', 'kurvenlicht adaptiv'], anzeige: 'Adaptives Kurvenlicht', aktiv: false },
+        { begriffe: ['anti blockiersystem', 'antiblocksicherung', 'abs brems'], anzeige: 'ABS', aktiv: true },
         { begriffe: ['tempomat abstand', 'adapt temp', 'acc'], anzeige: 'Abstandstempomat', farbe: 'orange', aktiv: true },
         { begriffe: ['abstands warn', 'distance warn'], anzeige: 'Abstandswarner', aktiv: false },
+        { begriffe: ['adapt kurv licht', 'kurvenlicht adaptiv'], anzeige: 'Adaptives Kurvenlicht', aktiv: true },
+        { begriffe: ['adblue technologie', 'adblue hinweis', 'scr system'], anzeige: 'AdBlue / SCR', aktiv: true },
+        { begriffe: ['akustikverglasung', 'akustik verglasung', 'frontscheibe akus'], anzeige: 'Akustikverglasung', aktiv: true },
+        { begriffe: ['alarmanlage', 'diebstahlwarnanlage'], anzeige: 'Alarmanlage', aktiv: true },
+        { begriffe: ['4wd', 'allrad'], anzeige: 'Allrad', farbe: 'orange', aktiv: true },
+        { begriffe: ['ambiente beleuchtung', 'ambiente licht', 'stimmungslicht'], anzeige: 'Ambiente-Beleuchtung', aktiv: true },
+        { begriffe: ['android auto'], anzeige: 'Android Auto', aktiv: true },
         { begriffe: ['anhängevorrichtung', 'anhängerkupplung', 'ahk'], anzeige: 'Anhängerkupplung', farbe: 'red', aktiv: true, nurInFeatures: true },
         { begriffe: ['anhängevorrichtung schwenkbar', 'anhängerkupplung schwenkbar'], anzeige: 'Anhängerkupplung schwenkbar', aktiv: true },
-        { begriffe: ['armlehne'], anzeige: 'Armlehne', aktiv: false },
         { begriffe: ['apple carplay', 'apple car play'], anzeige: 'Apple Carplay', aktiv: true },
-        { begriffe: ['android auto'], anzeige: 'Android Auto', aktiv: true },
-        { begriffe: ['außenspiegel elek verst', 'elek spiegel'], anzeige: 'Außenspiegel elektr. verstellbar', aktiv: true },
+        { begriffe: ['armlehne'], anzeige: 'Armlehne', aktiv: false },
+        { begriffe: ['aussen innen mit abblendautomat', 'aussen innenspiegel mit abblendautomatik', 'aeussen innen mit abblendautomatik'], anzeige: 'Außen-/Innenspiegel automatisch abblendend', aktiv: true },
+        { begriffe: ['spiegel klappbar', 'elek spiegel klapp', 'außenspiegel anklappbar', 'außenspiegel klappbar'], anzeige: 'Außenspiegel anklappbar', aktiv: true },
+        { begriffe: ['aussenspiegel mit abblendautomatik', 'aeussenspiegel mit abblendautomatik'], anzeige: 'Außenspiegel automatisch abblendend', aktiv: true },
         { begriffe: ['außenspiegel heizung', 'außenspiegel beheiz', 'außenspiegel heiz'], anzeige: 'Außenspiegel beheizbar', aktiv: true },
+        { begriffe: ['außenspiegel elek verst', 'elek spiegel'], anzeige: 'Außenspiegel elektr. verstellbar', aktiv: true },
         { begriffe: ['bang & olufsen', 'b&o', 'bang olufsen'], anzeige: 'Bang & Olufsen Sound System', farbe: 'red', aktiv: true, nurInFeatures: true },
         { begriffe: ['beats'], anzeige: 'Beats Sound System', farbe: 'red', aktiv: true, nurInFeatures: true },
-        { begriffe: ['blendfrei fernlicht', 'anti blend licht', 'fernlicht assist', 'auto fernlicht'], anzeige: 'Fernlicht Assistent', farbe: 'orange', aktiv: true },
+        { begriffe: ['berganfahrassist', 'berganfahr', 'hill start', 'hill hold', 'anfahrassist'], anzeige: 'Berganfahrassistent', aktiv: true },
+        { begriffe: ['bi xenon', 'scheinwerfer xenon', 'xenon scheinwerfer'], anzeige: 'Bi-/Xenon-Scheinwerfer', aktiv: true },
+        { begriffe: ['bluetooth', 'blue tooth'], anzeige: 'Bluetooth', aktiv: true },
+        { begriffe: ['bose'], anzeige: 'BOSE Sound System', farbe: 'red', aktiv: true },
         { begriffe: ['brems assist', 'brake assist'], verboten: ['notbrems', 'not brems'], anzeige: 'Bremsassistent', aktiv: true },
-        { begriffe: ['berganfahrassist', 'berganfahr', 'hill start', 'hill hold', 'anfahrassist'], anzeige: 'Berganfahrassistent', aktiv: false },
-        { begriffe: ['business paket professional', 'business paket'], anzeige: 'Business Paket', aktiv: true },
         { begriffe: ['burmester'], anzeige: 'Burmester Sound System', farbe: 'red', aktiv: true, nurInFeatures: true },
+        { begriffe: ['business paket professional', 'business paket'], anzeige: 'Business Paket', aktiv: true },
         { begriffe: ['canton'], anzeige: 'Canton Sound System', farbe: 'red', aktiv: true, nurInFeatures: true },
-        { begriffe: ['dachhimmel anth', 'himmel anth', 'dachhimmel schwarz', 'dachhim schwarz'], anzeige: 'Dachhimmel Anthrazit / Schwarz', aktiv: true },
         { begriffe: ['dachhimmel alcantara', 'himmel alcant'], anzeige: 'Dachhimmel Alcantara', aktiv: true },
-        { begriffe: ['elek fenst'], anzeige: 'Elektr. Fensterheber', aktiv: false },
-        { begriffe: ['elek heckklappe'], anzeige: 'Elektr. Heckklappe', aktiv: false },
+        { begriffe: ['dachhimmel anth', 'himmel anth', 'dachhimmel schwarz', 'dachhim schwarz'], anzeige: 'Dachhimmel Anthrazit / Schwarz', aktiv: true },
+        { begriffe: ['elek fenst'], anzeige: 'Elektr. Fensterheber', aktiv: true },
+        { begriffe: ['elek heckklappe'], anzeige: 'Elektr. Heckklappe', aktiv: true },
         { begriffe: ['sitz elek verstell', 'sitzeinstellung', 'sitz einstellung', 'elektr sitz'], anzeige: 'Elektr. Sitzeinstellung', aktiv: true },
         { begriffe: ['memory sitz', 'sitz memory', 'sitz elek verstell memory'], anzeige: 'Elektr. Sitzeinstellung mit Memory-Funktion', farbe: 'red', aktiv: true },
+        { begriffe: ['elek wegfahrsperre', 'elektrisch wegfahrsper', 'wegfahrsperre elek'], anzeige: 'Elektr. Wegfahrsperre', aktiv: true },
+        { begriffe: ['elektronisches stabilit', 'fahrstabilität', 'fahrstabilitaet'], anzeige: 'ESP', aktiv: true },
+        { begriffe: ['blendfrei fernlicht', 'anti blend licht', 'fernlicht assist', 'auto fernlicht'], anzeige: 'Fernlicht Assistent', farbe: 'orange', aktiv: true },
+        { begriffe: ['freisprecheinrichtung', 'freisprechanlage', 'hands free einricht'], anzeige: 'Freisprecheinrichtung', aktiv: true },
         { begriffe: ['garantie'], anzeige: 'Garantie', aktiv: false },
+        { begriffe: ['harman kardon', 'h&k', 'harman'], anzeige: 'Harman Kardon Sound System', farbe: 'red', aktiv: true, nurInFeatures: true },
         { begriffe: ['head up', 'head-up', 'hud'], anzeige: 'Head-Up Display', farbe: 'red', aktiv: true },
         { begriffe: ['heckantrieb', 'antrieb heck'], anzeige: 'Heckantrieb', aktiv: false },
-        { begriffe: ['harman kardon', 'h&k', 'harman'], anzeige: 'Harman Kardon Sound System', farbe: 'red', aktiv: true, nurInFeatures: true },
         { begriffe: ['induktiv laden', 'induktion laden', 'induktionsladen', 'wireless charge'], anzeige: 'Induktionsladeschale für Smartphone (Wireless Charging)', aktiv: false },
+        { begriffe: ['innenraumfilter aktiv', 'innenraum aktivkohlefilt', 'aktivkohle geruchs', 'innenraumfilter geruch'], anzeige: 'Innenraumfilter Aktivkohle', aktiv: true },
         { begriffe: ['innenspiegel abblend', 'inne spiegel auto'], anzeige: 'Innenspiegel autom. abblendend', aktiv: true },
-        { begriffe: ['lenkradheizung', 'beheizbares lenkrad', 'lenkrad heizung', 'lenkrad beheiz'], anzeige: 'Lenkradheizung', aktiv: true },
+        { begriffe: ['klima automatik', 'klimaautomatic', 'klima autom'], anzeige: 'Klimaautomatik', aktiv: true },
         { begriffe: ['lederlenkrad', 'leder lenkrad'], anzeige: 'Lederlenkrad', aktiv: false },
+        { begriffe: ['lenkradheizung', 'beheizbares lenkrad', 'lenkrad heizung', 'lenkrad beheiz'], anzeige: 'Lenkradheizung', aktiv: true },
+        { begriffe: ['lichtsensor'], anzeige: 'Lichtsensor', aktiv: true },
         { begriffe: ['matrix led', 'matrix scheinwerfer', 'matrix beam', 'matrix licht'], anzeige: 'Matrix Scheinwerfer', farbe: 'red', aktiv: true },
+        { begriffe: ['multifunktionslenkrad', 'multifunktion lenkrad', 'multifunk lenkr'], anzeige: 'Multifunktionslenkrad', aktiv: true },
+        { begriffe: ['nebelscheinwerfer', 'nebel scheinwerfer'], anzeige: 'Nebelscheinwerfer', aktiv: true },
         { begriffe: ['panorama', 'panoramadach', 'glas dach'], anzeige: 'Panoramadach', farbe: 'orange', aktiv: true },
-        { begriffe: ['park assist', 'park hilfe'], anzeige: 'Parkassistent', aktiv: true },
+        { begriffe: ['panorama schiebedach', 'schiebedach panorama', 'panorama schieb'], verboten: ['ohne panorama'], anzeige: 'Panoramadach elektr. schiebbar', farbe: 'orange', aktiv: true },
         { begriffe: ['pdc', 'park dist contr'], anzeige: 'Park-Distance-Control', aktiv: true },
+        { begriffe: ['park assist', 'park hilfe'], anzeige: 'Parkassistent', aktiv: true },
+        { begriffe: ['porsche dynam licht', 'porsche dynamic light', 'dynam licht syst'], verboten: ['licht system plus', 'porsche dynam licht plus'], anzeige: 'Porsche Dynamic Light System (PDLS)', aktiv: true },
+        { begriffe: ['pdls plus', 'porsche dynam licht plus', 'dynam licht system plus'], anzeige: 'Porsche Dynamic Light System Plus (PDLS+)', aktiv: true },
+        { begriffe: ['quattro'], anzeige: 'Quattro / Allrad', farbe: 'orange', aktiv: true },
+        { begriffe: ['radio dab', 'empfang dab', 'radioempfang dab', 'radio digital dab'], anzeige: 'Radio digital (DAB / DAB+)', aktiv: true },
+        { begriffe: ['regensensor'], anzeige: 'Regensensor', aktiv: true },
         { begriffe: ['reifen druck', 'druck kontrolle'], anzeige: 'Reifendruck Kontrollsystem', aktiv: true },
         { begriffe: ['rückfahrkamera', 'rückfahrkamerasystem'], anzeige: 'Rückfahrkamera', aktiv: true },
-        { begriffe: ['seiten airbag', 'airbag seite'], anzeige: 'Seitenairbag', aktiv: false },
-        { begriffe: ['spiegel klappbar', 'elek spiegel klapp', 'außenspiegel anklappbar', 'außenspiegel klappbar'], anzeige: 'Außenspiegel anklappbar', aktiv: true },
         { begriffe: ['scheckheft gepflegt', 'scheckheft'], anzeige: 'Scheckheftgepflegt', farbe: 'red', aktiv: true },
         { begriffe: ['keyless', 'schlüssel frei', 'schlüssellose zentral'], anzeige: 'Schlüssellose Zentralverriegelung (Keyless)', farbe: 'orange', aktiv: true },
+        { begriffe: ['seiten airbag', 'airbag seite'], anzeige: 'Seitenairbag', aktiv: false },
+        { begriffe: ['seitenscheibe akus', 'türscheiben akus', 'seitenscheibe verglasung'], anzeige: 'Seitenscheiben Akustikverglasung', aktiv: true, nurInFeatures: true },
+        { begriffe: ['sitzbelüftung', 'sitz belüftung', 'sitzkühlung', 'sitz kühlung'], anzeige: 'Sitzbelüftung', farbe: 'red', aktiv: true },
+        { begriffe: ['sitzheizung', 'sitz heizung', 'heizung sitz'], anzeige: 'Sitzheizung', farbe: 'orange', aktiv: true },
         { begriffe: ['servoschließung tür', 'soft close', 'softclose'], verboten: ['pedal', 'virtuell'], anzeige: 'Softclose', aktiv: true },
         { begriffe: ['sonnenschutzverglasung'], anzeige: 'Sonnenschutzverglasung', aktiv: true },
         { begriffe: ['sonnenschutzverglasung abgedunkelt'], anzeige: 'Sonnenschutzverglasung abgedunkelt', aktiv: true },
         { begriffe: ['spurhalte assist', 'lane assist'], anzeige: 'Spurhalteassistent', aktiv: true },
-        { begriffe: ['standheizung', 'standhei'], anzeige: 'Standheizung', aktiv: true },
         { begriffe: ['standbelüf'], anzeige: 'Standbelüftung', aktiv: true },
-        { begriffe: ['start stop', 'auto stop'], anzeige: 'Start/Stopp-Automatik', aktiv: false },
-        { begriffe: ['sitzheizung', 'sitz heizung', 'heizung sitz'], anzeige: 'Sitzheizung', farbe: 'orange', aktiv: true },
-        { begriffe: ['sitzbelüftung', 'sitz belüftung', 'sitzkühlung', 'sitz kühlung'], anzeige: 'Sitzbelüftung', farbe: 'red', aktiv: true },
+        { begriffe: ['standheizung', 'standhei'], anzeige: 'Standheizung', aktiv: true },
+        { begriffe: ['start stop', 'auto stop'], anzeige: 'Start/Stopp-Automatik', aktiv: true },
+        { begriffe: ['tempolimit anzeige', 'tempo limit hinwe', 'geschwind limit hinwe'], anzeige: 'Tempolimit-Anzeige', aktiv: true },
         { begriffe: ['totwinkel', 'blind spot'], anzeige: 'Totwinkel-Assistent', aktiv: true },
-        { begriffe: ['traction control', 'traktio kontr'], anzeige: 'Traktionskontrolle', aktiv: false },
-        { begriffe: ['360 grad', '360 kamera', '360 cam', 'umfeld kamera', 'surround cam'], anzeige: '360 Grad Kamera', farbe: 'red', aktiv: true },
+        { begriffe: ['traction control', 'traktio kontr', 'antischlupf', 'antrieb schlupf', 'asr'], anzeige: 'Traktionskontrolle', aktiv: true },
         { begriffe: ['verkehrszeichen', 'road sign'], anzeige: 'Verkehrszeichenerkennung', aktiv: true },
         { begriffe: ['digital cockpit', 'virtual cockpit', 'volldigit kombiinstrument', 'kombiinstrument digital'], anzeige: 'Volldigitales Kombiinstrument', aktiv: true },
         { begriffe: ['winter paket', 'kalt paket'], anzeige: 'Winterpaket', aktiv: true },
         { begriffe: ['zentral verriegelung', 'central lock', 'zentralverriegelung'], anzeige: 'Zentralverriegelung', aktiv: true }
+
     ];
 
     const techDataKonfigurationenDefault = [
@@ -169,7 +192,7 @@
     ];
 
     const mergeGruppenConfigDefault = [
-        { basis: 'außenspiegel', order: ['elektr. verstellbar', 'beheizbar', 'anklappbar', 'klappbar', 'auto. abblend.'] }
+        { basis: 'außenspiegel', order: ['elektr. verstellbar', 'beheizbar', 'anklappbar', 'klappbar', 'automatisch abblend.', 'auto. abblend.'] }
     ];
 
     // ============================================================
